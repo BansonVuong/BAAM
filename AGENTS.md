@@ -1,5 +1,23 @@
 # Agent Guide
 
+## Before Starting Work
+
+- Always inspect `git status` first.
+- Preserve all existing uncommitted changes; never discard or overwrite them.
+- Before editing, fetch the latest remote state and integrate the current
+  branch with its upstream:
+
+```bash
+git status --short
+git fetch origin
+git merge --ff-only @{upstream}
+```
+
+- If the fast-forward merge cannot proceed because the branch diverged or
+  local changes conflict, stop and report the situation instead of resetting,
+  rebasing, force-pushing, or discarding work.
+- Run the synchronization again immediately before pushing.
+
 ## Environment Boundaries
 
 - Local development and production are independent.
