@@ -319,8 +319,14 @@ function EmbeddedBetCard({
             </Mono>
           </div>
           <div className="flex items-center gap-2.5">
-            {bet.createSig && <ExplorerLink sig={bet.createSig} label="stake" />}
-            {bet.acceptSig && <ExplorerLink sig={bet.acceptSig} label="match" />}
+            {bet.createSig === bet.acceptSig ? (
+              bet.createSig && <ExplorerLink sig={bet.createSig} label="escrow" />
+            ) : (
+              <>
+                {bet.createSig && <ExplorerLink sig={bet.createSig} label="stake" />}
+                {bet.acceptSig && <ExplorerLink sig={bet.acceptSig} label="match" />}
+              </>
+            )}
             {bet.settleSig && <ExplorerLink sig={bet.settleSig} label="payout" />}
           </div>
         </div>

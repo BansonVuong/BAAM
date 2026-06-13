@@ -432,6 +432,8 @@ async function crankWitnessBets(): Promise<void> {
     const vault = sportsVaultPda(betPubkey);
 
     if ("locked" in acct.state) {
+      // Sports bets are settled from the ESPN scraper by crankSportsBets, not votes.
+      if (bet.validation === "sports") continue;
       if (!bet.resolvedWinner || !acct.opponent) continue;
       if (acct.settleAfter.toNumber() > now) continue;
       // creator backs "home"/challenger, so home_won === challenger won.
