@@ -309,6 +309,20 @@ export function postMessage(input: {
 }): Promise<{ message: ChatMessage }> {
   return req("/messages", { method: "POST", body: JSON.stringify(input) });
 }
+/** Create a bet and linked system chat message for embedded card rendering. */
+export function createBet(input: {
+  groupId: string;
+  type: "PERSONAL" | "DEV";
+  challenger: string;
+  acceptor: string;
+  terms: string;
+  stake: string;
+  currency: "POINTS" | "SOL";
+  witnesses?: number;
+  minBettors?: number;
+}): Promise<{ bet: Bet; message: ChatMessage }> {
+  return req("/bets", { method: "POST", body: JSON.stringify(input) });
+}
 
 /** All bets. */
 export function getBets(): Promise<{ bets: Bet[] }> {

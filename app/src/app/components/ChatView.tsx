@@ -9,6 +9,7 @@ import { SendBetModal, type NewBet } from "./SendBetModal";
 import {
   addGroupMemberByUsername,
   createGroup,
+  createBet,
   getBets,
   getGroups,
   getMessages,
@@ -476,22 +477,27 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
 
   function handleSendBet(bet: NewBet): void {
     if (!activeGroup || !activeGroupData) return;
-    const messageText = bet.type === "DEV"
-      ? `🔥 New dev bet: ${bet.terms} · Stake: ${bet.stake} ${bet.currency}`
-      : `🎯 New personal bet vs ${bet.acceptor}: ${bet.terms} · Stake: ${bet.stake} ${bet.currency}`;
     const groupId = activeGroup;
-    void postMessage({
+    const normalizedAcceptor = bet.type === "DEV"
+      ? (bet.acceptor?.trim() || "anyone")
+      : bet.acceptor.trim();
+    void createBet({
       groupId,
-      sender: currentUser.username,
-      initials: currentUser.initials,
-      text: messageText,
+      type: bet.type,
+      challenger: currentUser.username,
+      acceptor: normalizedAcceptor,
+      terms: bet.terms.trim(),
+      stake: bet.stake.trim(),
+      currency: bet.currency,
+      witnesses: Math.max(1, Math.ceil(activeGroupData.members / 2)),
+      minBettors: 2,
     })
       .then(async () => {
         await refreshMessages(groupId);
         await refreshGroupsAndBets();
       })
       .catch((err) => {
-        window.alert(`Failed to post bet: ${err instanceof Error ? err.message : String(err)}`);
+        window.alert(`Failed to create bet card: ${err instanceof Error ? err.message : String(err)}`);
       });
   }
 
@@ -680,7 +686,13 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.18, delay: idx < 6 ? idx * 0.03 : 0 }}
               >
-                <Message msg={message} bet={message.betId ? betsById[message.betId] : undefined} />
+                <Message
+                  msg={message}
+                  bet={message.betId ? betsById[message.betId] : undefined}
+                  voterName={currentUser.username}
+                  onVote={(betId, votedFor) => { void handleVote(betId, votedFor); }}
+                  isVoting={(betId) => Boolean(votingByBetId[betId])}
+                />
               </motion.div>
             ))}
           </AnimatePresence>

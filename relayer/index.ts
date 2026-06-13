@@ -554,6 +554,85 @@ const server = http.createServer(async (req, res) => {
       return json(res, 201, { message: out });
     }
 
+    // POST /bets  { groupId, type, challenger, acceptor, terms, stake, currency, witnesses?, minBettors? }
+    // Creates a persistent bet plus a linked system message for embedded bet-card rendering.
+    if (req.method === "POST" && req.url === "/bets") {
+      const betsCol = await bets();
+      const groupsCol = await groups();
+      const messagesCol = await messages();
+      if (!betsCol || !groupsCol || !messagesCol) return dbUnconfigured(res);
+
+      const body = await readJson(req);
+      const groupId = typeof body.groupId === "string" ? body.groupId.trim() : "";
+      const type = body.type === "PERSONAL" || body.type === "DEV" ? body.type : null;
+      const challenger = typeof body.challenger === "string" ? body.challenger.trim() : "";
+      const acceptorInput = typeof body.acceptor === "string" ? body.acceptor.trim() : "";
+      const terms = typeof body.terms === "string" ? body.terms.trim() : "";
+      const stakeInput = typeof body.stake === "string" ? body.stake.trim() : `${body.stake ?? ""}`.trim();
+      const currency = body.currency === "SOL" || body.currency === "POINTS" ? body.currency : null;
+
+      if (!groupId) return json(res, 400, { error: "groupId is required" });
+      if (!type) return json(res, 400, { error: "type must be PERSONAL or DEV" });
+      if (!challenger) return json(res, 400, { error: "challenger is required" });
+      const acceptor = type === "DEV" ? (acceptorInput || "anyone") : acceptorInput;
+      if (!acceptor) return json(res, 400, { error: "acceptor is required" });
+      if (terms.length < 8) return json(res, 400, { error: "terms must be at least 8 characters" });
+      const numericStake = Number(stakeInput);
+      if (!stakeInput || !Number.isFinite(numericStake) || numericStake <= 0) {
+        return json(res, 400, { error: "stake must be a positive number" });
+      }
+      if (!currency) return json(res, 400, { error: "currency must be SOL or POINTS" });
+
+      const group = await groupsCol.findOne({ id: groupId }, { projection: { _id: 0 } });
+      if (!group) return json(res, 404, { error: "group not found" });
+
+      const now = Date.now();
+      const ts = new Date(now).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      const witnesses = Math.max(1, Math.floor(toFiniteNumber(body.witnesses, 1)));
+      const minBettors = Math.max(1, Math.floor(toFiniteNumber(body.minBettors, 2)));
+      const groupSize = Math.max(1, Math.floor(toFiniteNumber(group.members, 1)));
+
+      const betDoc: BetDoc = {
+        id: `bet-${now}-${crypto.randomBytes(3).toString("hex")}`,
+        type,
+        challenger,
+        acceptor,
+        terms,
+        stake: stakeInput,
+        currency,
+        status: "PENDING",
+        witnesses,
+        minBettors,
+        groupSize,
+      };
+      await betsCol.insertOne(betDoc);
+
+      const systemMessage: MessageDoc = {
+        id: `m-${now}-${crypto.randomBytes(2).toString("hex")}`,
+        groupId,
+        sender: "System",
+        initials: "SY",
+        betId: betDoc.id,
+        system: true,
+        ts,
+        createdAt: now,
+      };
+      await messagesCol.insertOne(systemMessage);
+
+      await groupsCol.updateOne(
+        { id: groupId },
+        {
+          $set: {
+            pendingBet: true,
+            lastMsg: `${challenger} posted a new ${type === "DEV" ? "dev" : "personal"} bet`,
+            time: ts,
+          },
+        },
+      );
+
+      return json(res, 201, { bet: normalizeBetDoc(betDoc), message: systemMessage });
+    }
+
     // GET /bets  — all bets
     if (req.method === "GET" && req.url === "/bets") {
       const col = await bets();
