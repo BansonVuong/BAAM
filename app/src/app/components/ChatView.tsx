@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Send, Paperclip, Hash, Zap, Shield, Clock,
-  CheckCircle2, Users, AlertTriangle, ChevronRight, Smile, Plus,
+  CheckCircle2, Users, AlertTriangle, ChevronRight, Smile, Plus, X, UserPlus,
 } from "lucide-react";
 import { Avatar, Pill, Mono } from "./ui";
 import { SendBetModal, type NewBet } from "./SendBetModal";
@@ -21,10 +21,28 @@ const GROUPS = [
 
 const GROUP_MEMBERS = [
   { name: "Kevin", initials: "KV" },
-  { name: "Matt", initials: "MT" },
   { name: "Jordan", initials: "JD" },
   { name: "Sarah", initials: "SR" },
 ];
+
+const GROUP_MEMBERS_BY_GROUP: Record<string, { name: string; initials: string }[]> = {
+  "1": GROUP_MEMBERS,
+  "2": [
+    { name: "Leah", initials: "LH" },
+    { name: "Andre", initials: "AN" },
+    { name: "Nia", initials: "NA" },
+  ],
+  "3": [
+    { name: "Priya", initials: "PR" },
+    { name: "Noah", initials: "NH" },
+    { name: "Avery", initials: "AV" },
+    { name: "Eli", initials: "EL" },
+  ],
+  "4": [
+    { name: "Maya", initials: "MY" },
+    { name: "Rico", initials: "RC" },
+  ],
+};
 
 type BetStatus = "PENDING" | "ACTIVE" | "RESOLVED";
 type BetType = "PERSONAL" | "DEV";
@@ -99,6 +117,31 @@ const INITIAL_MESSAGES_BY_GROUP: Record<string, Msg[]> = {
   "3": [],
   "4": [],
 };
+
+function toInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean).slice(0, 2);
+  if (!parts.length) return "??";
+  return parts.map((part) => part[0]?.toUpperCase() ?? "").join("");
+}
+
+function parseMemberDraft(input: string): { name: string; initials: string }[] {
+  const unique = new Map<string, string>();
+  for (const raw of input.split(",")) {
+    const clean = raw.trim().replace(/\s+/g, " ");
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (!unique.has(key)) unique.set(key, clean);
+  }
+  return Array.from(unique.values()).map((name) => ({ name, initials: toInitials(name) }));
+}
+
+function makePlaceholderMembers(count: number): { name: string; initials: string }[] {
+  return Array.from({ length: Math.max(count - 1, 0) }, (_, index) => {
+    const position = index + 1;
+    const name = `Member ${position}`;
+    return { name, initials: toInitials(name) };
+  });
+}
 
 /* ── Embedded Bet Card ─────────────────────────────────── */
 function BetTypeTag({ type }: { type: BetType }) {
@@ -255,14 +298,24 @@ export function ChatView() {
   const [activeGroup, setActiveGroup] = useState("1");
   const [input, setInput] = useState("");
   const [betModalOpen, setBetModalOpen] = useState(false);
+  const [createGroupOpen, setCreateGroupOpen] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
+  const [newGroupMembers, setNewGroupMembers] = useState("");
+  const [createGroupError, setCreateGroupError] = useState<string | null>(null);
+  const [creatingGroup, setCreatingGroup] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const [groups, setGroups] = useState<(typeof GROUPS[number] | ApiGroup)[]>(GROUPS);
   const [bets, setBets] = useState<Bet[]>(BETS);
   const [messagesByGroup, setMessagesByGroup] = useState<Record<string, Msg[]>>(INITIAL_MESSAGES_BY_GROUP);
+  const [groupMembersByGroup, setGroupMembersByGroup] = useState<Record<string, { name: string; initials: string }[]>>(GROUP_MEMBERS_BY_GROUP);
   const [live, setLive] = useState(false);
   const messages = messagesByGroup[activeGroup] ?? [];
   const activeGroupData = groups.find((g) => g.id === activeGroup) ?? groups[0];
+  const activeGroupMembers = groupMembersByGroup[activeGroup] ?? [];
+  const hasChallengeTargets = activeGroupMembers.length > 0;
+  const draftedMembers = parseMemberDraft(newGroupMembers);
+  const projectedGroupSize = draftedMembers.length + 1;
 
   const betsById = Object.fromEntries(bets.map((b) => [b.id, b])) as Record<string, Bet>;
 
@@ -286,6 +339,13 @@ export function ChatView() {
         if (b.bets.length) setBets(b.bets as Bet[]);
         if (g.groups.length) {
           setGroups(g.groups);
+          setGroupMembersByGroup((prev) => {
+            const next = { ...prev };
+            for (const group of g.groups) {
+              if (!next[group.id]) next[group.id] = makePlaceholderMembers(group.members);
+            }
+            return next;
+          });
           setLive(true);
         }
       })
@@ -349,7 +409,7 @@ export function ChatView() {
   }
 
   function handleBetSend(bet: NewBet) {
-    if (!activeGroupData) return;
+    if (!activeGroupData || !hasChallengeTargets) return;
 
     const now = Date.now();
     const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -386,35 +446,66 @@ export function ChatView() {
     setMessagesByGroup((prev) => ({ ...prev, [groupId]: [...(prev[groupId] ?? []), myMsg, systemMsg] }));
     setGroups((prev) => prev.map((g) => (g.id === groupId ? { ...g, lastMsg: myMsg.text ?? "New bet posted", time: ts } : g)));
   }
+  function openCreateGroupModal() {
+    setCreateGroupOpen(true);
+    setNewGroupName("");
+    setNewGroupMembers("");
+    setCreateGroupError(null);
+  }
+
+  function closeCreateGroupModal() {
+    if (creatingGroup) return;
+    setCreateGroupOpen(false);
+    setCreateGroupError(null);
+  }
 
   async function handleCreateGroup() {
-    const name = window.prompt("Group name");
-    if (!name || !name.trim()) return;
-    const trimmed = name.trim();
+    const trimmed = newGroupName.trim();
+    const invitedMembers = parseMemberDraft(newGroupMembers);
+    if (!trimmed) {
+      setCreateGroupError("Group name is required.");
+      return;
+    }
+
+    setCreateGroupError(null);
+    setCreatingGroup(true);
+    const memberCount = invitedMembers.length + 1;
+    const ts = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
     if (!live) {
       const localGroup = {
         id: `local-${Date.now()}`,
         name: trimmed,
-        initials: trimmed.slice(0, 2).toUpperCase(),
-        members: 1,
+        initials: toInitials(trimmed),
+        members: memberCount,
         pendingBet: false,
         lastMsg: "Group created",
-        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        time: ts,
       };
       setGroups((prev) => [localGroup, ...prev]);
       setActiveGroup(localGroup.id);
       setMessagesByGroup((prev) => ({ ...prev, [localGroup.id]: [] }));
+      setGroupMembersByGroup((prev) => ({ ...prev, [localGroup.id]: invitedMembers }));
+      setCreateGroupOpen(false);
+      setCreatingGroup(false);
       return;
     }
 
     try {
-      const { group } = await createGroup({ name: trimmed });
+      const { group } = await createGroup({
+        name: trimmed,
+        initials: toInitials(trimmed),
+        members: memberCount,
+      });
       setGroups((prev) => [group, ...prev]);
       setActiveGroup(group.id);
       setMessagesByGroup((prev) => ({ ...prev, [group.id]: [] }));
+      setGroupMembersByGroup((prev) => ({ ...prev, [group.id]: invitedMembers }));
+      setCreateGroupOpen(false);
     } catch {
-      /* leave the current list unchanged on error */
+      setCreateGroupError("Could not create group right now. Please try again.");
+    } finally {
+      setCreatingGroup(false);
     }
   }
 
@@ -473,11 +564,11 @@ export function ChatView() {
 
           <div className="p-2 border-t border-border">
             <button
-              onClick={() => void handleCreateGroup()}
+              onClick={openCreateGroupModal}
               className="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl border border-dashed border-border text-muted-foreground hover:text-primary hover:border-primary/30 transition-colors"
               style={{ fontSize: "11px" }}
             >
-              <Hash size={11} /> New Group
+              <Hash size={11} /> Create Group
             </button>
           </div>
         </div>
@@ -523,16 +614,19 @@ export function ChatView() {
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.93 }}
-                onClick={() => setBetModalOpen(true)}
+                onClick={() => { if (hasChallengeTargets) setBetModalOpen(true); }}
+                disabled={!hasChallengeTargets}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-xl border font-semibold shrink-0 transition-all duration-150"
                 style={{
                   fontSize: "11px",
-                  color: "#9945FF",
-                  borderColor: "rgba(153,69,255,0.35)",
-                  background: "rgba(153,69,255,0.08)",
+                  color: hasChallengeTargets ? "#9945FF" : "var(--muted-foreground)",
+                  borderColor: hasChallengeTargets ? "rgba(153,69,255,0.35)" : "var(--border)",
+                  background: hasChallengeTargets ? "rgba(153,69,255,0.08)" : "var(--muted)",
                   fontFamily: "'JetBrains Mono', monospace",
                   letterSpacing: "0.04em",
                   whiteSpace: "nowrap",
+                  opacity: hasChallengeTargets ? 1 : 0.7,
+                  cursor: hasChallengeTargets ? "pointer" : "not-allowed",
                 }}
               >
                 <Plus size={11} />
@@ -564,6 +658,14 @@ export function ChatView() {
                 </motion.button>
               </div>
             </div>
+            {!hasChallengeTargets && (
+              <div className="mt-2 flex items-center gap-1.5 text-muted-foreground">
+                <UserPlus size={12} />
+                <span style={{ fontSize: "11px" }}>
+                  Add at least one member to this group before creating a challenge.
+                </span>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -573,8 +675,133 @@ export function ChatView() {
         onClose={() => setBetModalOpen(false)}
         onSend={handleBetSend}
         groupName={activeGroupData.name}
-        groupMembers={GROUP_MEMBERS}
+        groupMembers={activeGroupMembers}
       />
+
+      <AnimatePresence>
+        {createGroupOpen && (
+          <>
+            <motion.button
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={closeCreateGroupModal}
+              className="fixed inset-0 z-50"
+              style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(2px)" }}
+            />
+            <div className="fixed inset-0 z-[51] flex items-center justify-center p-4 pointer-events-none">
+              <motion.div
+                initial={{ opacity: 0, y: 20, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 10, scale: 0.98 }}
+                transition={{ duration: 0.2 }}
+                className="w-full max-w-md rounded-2xl border border-border overflow-hidden pointer-events-auto"
+                style={{ background: "var(--card)", boxShadow: "0 24px 48px rgba(0,0,0,0.35)" }}
+              >
+                <form onSubmit={(event) => { event.preventDefault(); void handleCreateGroup(); }}>
+                  <div className="px-5 py-4 border-b border-border flex items-start justify-between">
+                    <div>
+                      <p className="text-foreground" style={{ fontSize: "15px", fontWeight: 700 }}>
+                        Create Group
+                      </p>
+                      <p className="text-muted-foreground mt-1" style={{ fontSize: "11px" }}>
+                        Start a new accountability squad and invite your first members.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={closeCreateGroupModal}
+                      className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                      disabled={creatingGroup}
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+
+                  <div className="px-5 py-4 space-y-4">
+                    <div>
+                      <Mono className="text-muted-foreground uppercase block mb-2" style={{ fontSize: "9px", letterSpacing: "0.1em" } as React.CSSProperties}>
+                        Group name
+                      </Mono>
+                      <input
+                        value={newGroupName}
+                        onChange={(event) => setNewGroupName(event.target.value)}
+                        placeholder="e.g. Solana Sprint Club"
+                        className="w-full px-3 py-2.5 rounded-xl border border-border bg-muted text-foreground placeholder:text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                        style={{ fontSize: "13px" }}
+                        maxLength={48}
+                      />
+                    </div>
+
+                    <div>
+                      <Mono className="text-muted-foreground uppercase block mb-2" style={{ fontSize: "9px", letterSpacing: "0.1em" } as React.CSSProperties}>
+                        Invite members (comma-separated)
+                      </Mono>
+                      <input
+                        value={newGroupMembers}
+                        onChange={(event) => setNewGroupMembers(event.target.value)}
+                        placeholder="e.g. Kevin, Jordan, Sarah"
+                        className="w-full px-3 py-2.5 rounded-xl border border-border bg-muted text-foreground placeholder:text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                        style={{ fontSize: "13px" }}
+                      />
+                      <p className="text-muted-foreground mt-2" style={{ fontSize: "11px" }}>
+                        You + {draftedMembers.length} invited = {projectedGroupSize} members.
+                      </p>
+                      {draftedMembers.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {draftedMembers.map((member) => (
+                            <span
+                              key={member.name}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-border bg-muted/60 text-muted-foreground"
+                              style={{ fontSize: "11px" }}
+                            >
+                              <Avatar initials={member.initials} size={16} />
+                              {member.name}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {createGroupError && (
+                      <div className="px-2.5 py-2 rounded-lg border border-[#FF4A4A]/30 bg-[#FF4A4A]/10 text-[#FF7E7E]" style={{ fontSize: "11px" }}>
+                        {createGroupError}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="px-5 py-3.5 border-t border-border flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={closeCreateGroupModal}
+                      disabled={creatingGroup}
+                      className="px-3.5 py-2 rounded-xl border border-border text-muted-foreground hover:text-foreground transition-colors"
+                      style={{ fontSize: "12px", fontWeight: 600 }}
+                    >
+                      Cancel
+                    </button>
+                    <motion.button
+                      type="submit"
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      disabled={creatingGroup || !newGroupName.trim()}
+                      className="ml-auto inline-flex items-center gap-1.5 px-4 py-2 rounded-xl font-semibold transition-all"
+                      style={{
+                        fontSize: "12px",
+                        background: creatingGroup || !newGroupName.trim() ? "var(--muted)" : "var(--primary)",
+                        color: creatingGroup || !newGroupName.trim() ? "var(--muted-foreground)" : "#fff",
+                      }}
+                    >
+                      <UserPlus size={12} />
+                      {creatingGroup ? "Creating…" : "Create Group"}
+                    </motion.button>
+                  </div>
+                </form>
+              </motion.div>
+            </div>
+          </>
+        )}
+      </AnimatePresence>
     </>
   );
 }
