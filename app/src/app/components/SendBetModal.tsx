@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
   X, Shield, Zap, ChevronRight, Lock, Clock,
@@ -88,6 +89,7 @@ export function SendBetModal({
   const [currency, setCurrency] = useState<BetCurrency>("POINTS");
   const [sent,     setSent]     = useState(false);
   const inputRef   = useRef<HTMLTextAreaElement>(null);
+  const hasChallengeTargets = groupMembers.length > 0;
 
   /* reset when closed */
   useEffect(() => {
@@ -106,11 +108,12 @@ export function SendBetModal({
     }
   }, [step]);
 
-  const canStep1 = betType && (betType === "DEV" ? true : acceptor.trim().length > 0);
+  const canStep1 = hasChallengeTargets && (betType === "DEV" ? true : acceptor.trim().length > 0);
   const canStep2 = terms.trim().length > 8;
   const canStep3 = stake.trim().length > 0 && Number(stake) > 0;
 
   function handleSend() {
+    if (!hasChallengeTargets) return;
     setSent(true);
     onSend({
       type:     betType,
@@ -125,7 +128,9 @@ export function SendBetModal({
 
   const STEPS = ["Type", "Terms", "Stake", "Confirm"];
 
-  return (
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
     <AnimatePresence>
       {open && (
         <>
@@ -140,24 +145,22 @@ export function SendBetModal({
           />
 
           {/* Panel */}
-          <motion.div
-            initial={{ opacity: 0, y: 32, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0,  scale: 1    }}
-            exit={{   opacity: 0, y: 16,  scale: 0.97 }}
-            transition={{ duration: 0.28, ease: [0.25, 0.46, 0.45, 0.94] }}
-            className="fixed z-50 rounded-2xl border border-border overflow-hidden"
-            style={{
-              width:     "min(460px, calc(100vw - 32px))",
-              top:       "50%",
-              left:      "50%",
-              transform: "translate(-50%, -50%)",
-              background: "var(--card)",
-              boxShadow: "0 24px 64px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.04)",
-              maxHeight: "calc(100vh - 48px)",
-              display:   "flex",
-              flexDirection: "column",
-            }}
-          >
+          <div className="fixed inset-0 z-[51] flex items-center justify-center p-4 pointer-events-none">
+            <motion.div
+              initial={{ opacity: 0, y: 32, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0,  scale: 1    }}
+              exit={{   opacity: 0, y: 16,  scale: 0.97 }}
+              transition={{ duration: 0.28, ease: [0.25, 0.46, 0.45, 0.94] }}
+              className="w-full rounded-2xl border border-border overflow-hidden pointer-events-auto"
+              style={{
+                width:     "min(460px, 100%)",
+                background: "var(--card)",
+                boxShadow: "0 24px 64px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.04)",
+                maxHeight: "calc(100vh - 32px)",
+                display:   "flex",
+                flexDirection: "column",
+              }}
+            >
 
             {/* ── Header ──────────────────────────────── */}
             <div className="px-5 pt-5 pb-4 border-b border-border shrink-0">
@@ -218,6 +221,17 @@ export function SendBetModal({
                     <p className="text-muted-foreground" style={{ fontSize: "12px" }}>
                       What kind of bet?
                     </p>
+                    {!hasChallengeTargets && (
+                      <div
+                        className="flex items-start gap-2.5 p-3 rounded-xl"
+                        style={{ background: "rgba(255,74,74,0.08)", border: "1px solid rgba(255,74,74,0.25)" }}
+                      >
+                        <AlertCircle size={13} style={{ color: "#FF7E7E", marginTop: 1, flexShrink: 0 }} />
+                        <p className="text-muted-foreground leading-snug" style={{ fontSize: "11px" }}>
+                          This group has no challenge targets yet. Add at least one member before posting a bet.
+                        </p>
+                      </div>
+                    )}
 
                     <div className="grid grid-cols-2 gap-3">
                       {(["PERSONAL", "DEV"] as BetType[]).map(t => (
@@ -299,6 +313,11 @@ export function SendBetModal({
                               {m.name}
                             </motion.button>
                           ))}
+                          {!groupMembers.length && (
+                            <span className="text-muted-foreground" style={{ fontSize: "11px" }}>
+                              No members available to challenge in this group yet.
+                            </span>
+                          )}
                         </div>
                       </motion.div>
                     )}
@@ -623,9 +642,11 @@ export function SendBetModal({
                 </motion.button>
               </div>
             )}
-          </motion.div>
+            </motion.div>
+          </div>
         </>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body,
   );
 }
