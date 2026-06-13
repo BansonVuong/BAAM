@@ -17,6 +17,7 @@ import {
 import { Input } from "./ui/input";
 import { SendBetModal, type NewBet } from "./SendBetModal";
 import {
+  acceptBet,
   addGroupMemberByUsername,
   createGroup,
   createBet,
@@ -36,6 +37,7 @@ type Msg = ChatMessage;
 type ChatDialog =
   | { type: "create-group" }
   | { type: "add-member"; groupName: string }
+  | { type: "confirm-accept"; betId: string; challenger: string; stake: string; currency: string }
   | { type: "confirm-vote"; betId: string; votedFor: BetVoteChoice; candidateName: string; isChange: boolean }
   | { type: "result"; title: string; description: string; tone: "success" | "error" };
 
@@ -61,6 +63,7 @@ function countVotes(bet: Bet): { challenger: number; acceptor: number; total: nu
 }
 
 function getResolvedWinner(bet: Bet): BetVoteChoice | undefined {
+  if (bet.status === "PENDING") return undefined;
   if (bet.resolvedWinner) return bet.resolvedWinner;
   const votes = countVotes(bet);
   const threshold = Math.max(1, Number(bet.witnesses) || 1);
@@ -74,7 +77,7 @@ function isBetCompleted(bet: Bet): boolean {
 }
 
 function applyVoteToBet(bet: Bet, voter: string, votedFor: BetVoteChoice): Bet {
-  if (isBetCompleted(bet)) return bet;
+  if (isBetCompleted(bet) || bet.status !== "ACTIVE") return bet;
   const nextVotesByVoter: Record<string, BetVoteChoice> = {
     ...getVotesByVoter(bet),
     [voter]: votedFor,
@@ -84,14 +87,9 @@ function applyVoteToBet(bet: Bet, voter: string, votedFor: BetVoteChoice): Bet {
     votesByVoter: nextVotesByVoter,
   };
   const winner = getResolvedWinner(nextBet);
-  const votes = countVotes(nextBet);
   return {
     ...nextBet,
-    status: winner
-      ? "COMPLETED"
-      : bet.status === "PENDING" && votes.total > 0
-        ? "ACTIVE"
-        : bet.status,
+    status: winner ? "COMPLETED" : bet.status,
     resolvedWinner: winner,
   };
 }
@@ -127,11 +125,15 @@ function EmbeddedBetCard({
   bet,
   voterName,
   isVoting,
+  isAccepting,
+  onAccept,
   onVote,
 }: {
   bet: Bet;
   voterName: string;
   isVoting: boolean;
+  isAccepting: boolean;
+  onAccept: (bet: Bet) => void;
   onVote: (betId: string, votedFor: BetVoteChoice) => void;
 }) {
   const votes = countVotes(bet);
@@ -141,7 +143,14 @@ function EmbeddedBetCard({
   const winnerName = winner === "challenger" ? bet.challenger : bet.acceptor;
   const myVote = getVotesByVoter(bet)[voterName];
   const quorumPct = Math.min(100, (votes.total / witnessThreshold) * 100);
-  const canVote = !isResolved && !winner && !isVoting;
+  const isPending = bet.status === "PENDING";
+  const isAddressedToViewer = bet.acceptor.toLowerCase() === voterName.toLowerCase()
+    || bet.acceptor.toLowerCase() === "anyone";
+  const canAccept = isPending
+    && bet.challenger.toLowerCase() !== voterName.toLowerCase()
+    && isAddressedToViewer
+    && !isAccepting;
+  const canVote = bet.status === "ACTIVE" && !isResolved && !winner && !isVoting;
 
   return (
     <div className="w-full max-w-[420px] rounded-2xl border border-border overflow-hidden bg-card">
@@ -204,6 +213,18 @@ function EmbeddedBetCard({
               {winner ? `Completed — winner: ${winnerName}` : "Completed"}
             </span>
           </div>
+        ) : isPending ? (
+          canAccept ? (
+            <Button className="w-full" onClick={() => onAccept(bet)} disabled={isAccepting}>
+              {isAccepting ? "Accepting..." : `Accept ${bet.stake} ${bet.currency} challenge`}
+            </Button>
+          ) : (
+            <div className="rounded-lg border border-amber-500/25 bg-amber-500/8 px-3 py-2">
+              <span className="text-amber-500" style={{ fontSize: "11px", fontWeight: 700 }}>
+                Waiting for {bet.acceptor} to accept
+              </span>
+            </div>
+          )
         ) : (
           <div className="grid grid-cols-2 gap-2">
             <motion.button
@@ -258,13 +279,17 @@ function Message({
   bet,
   voterName,
   onVote,
+  onAccept,
   isVoting,
+  isAccepting,
 }: {
   msg: Msg;
   bet?: Bet;
   voterName: string;
   onVote: (betId: string, votedFor: BetVoteChoice) => void;
+  onAccept: (bet: Bet) => void;
   isVoting: (betId: string) => boolean;
+  isAccepting: (betId: string) => boolean;
 }) {
   if (msg.system && bet) {
     return (
@@ -276,7 +301,9 @@ function Message({
           bet={bet}
           voterName={voterName}
           onVote={onVote}
+          onAccept={onAccept}
           isVoting={isVoting(bet.id)}
+          isAccepting={isAccepting(bet.id)}
         />
       </div>
     );
@@ -308,6 +335,7 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [votingByBetId, setVotingByBetId] = useState<Record<string, boolean>>({});
+  const [acceptingByBetId, setAcceptingByBetId] = useState<Record<string, boolean>>({});
   const [chatDialog, setChatDialog] = useState<ChatDialog | null>(null);
   const [dialogInput, setDialogInput] = useState("");
   const [dialogBusy, setDialogBusy] = useState(false);
@@ -403,10 +431,6 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
     setShowCompletedBets(false);
   }, [activeGroup]);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
   async function sendMessage(): Promise<void> {
     const text = input.trim();
     if (!text || !activeGroup) return;
@@ -472,7 +496,7 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
 
   function handleVote(betId: string, votedFor: BetVoteChoice): void {
     const current = betsById[betId];
-    if (!current || isBetCompleted(current)) return;
+    if (!current || isBetCompleted(current) || current.status !== "ACTIVE") return;
 
     const candidateName = votedFor === "challenger" ? current.challenger : current.acceptor;
     const previousVote = getVotesByVoter(current)[currentUser.username];
@@ -483,6 +507,36 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
       candidateName,
       isChange: Boolean(previousVote && previousVote !== votedFor),
     });
+  }
+
+  function handleAccept(bet: Bet): void {
+    setChatDialog({
+      type: "confirm-accept",
+      betId: bet.id,
+      challenger: bet.challenger,
+      stake: bet.stake,
+      currency: bet.currency,
+    });
+  }
+
+  async function submitAccept(dialog: Extract<ChatDialog, { type: "confirm-accept" }>): Promise<void> {
+    setAcceptingByBetId((prev) => ({ ...prev, [dialog.betId]: true }));
+    setDialogBusy(true);
+    try {
+      const { bet } = await acceptBet(dialog.betId);
+      upsertBet(bet);
+      setChatDialog(null);
+      void refreshGroupsAndBets();
+    } catch (err) {
+      showResult("Acceptance failed", err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setDialogBusy(false);
+      setAcceptingByBetId((prev) => {
+        const next = { ...prev };
+        delete next[dialog.betId];
+        return next;
+      });
+    }
   }
 
   async function submitVote(dialog: Extract<ChatDialog, { type: "confirm-vote" }>): Promise<void> {
@@ -727,7 +781,9 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
                   bet={message.betId ? betsById[message.betId] : undefined}
                   voterName={currentUser.username}
                   onVote={handleVote}
+                  onAccept={handleAccept}
                   isVoting={(betId) => Boolean(votingByBetId[betId])}
+                  isAccepting={(betId) => Boolean(acceptingByBetId[betId])}
                 />
               </motion.div>
             ))}
@@ -823,6 +879,7 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
                 <DialogHeader className="pr-6">
                   <div className="mb-1 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
                     {chatDialog.type === "add-member" ? <UserPlus size={18} /> :
+                      chatDialog.type === "confirm-accept" ? <CheckCircle2 size={18} /> :
                       chatDialog.type === "confirm-vote" ? <Shield size={18} /> :
                         chatDialog.type === "result" && chatDialog.tone === "error" ? <AlertCircle size={18} /> :
                           chatDialog.type === "result" ? <CheckCircle2 size={18} /> : <Users size={18} />}
@@ -830,12 +887,14 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
                   <DialogTitle className="text-foreground">
                     {chatDialog.type === "create-group" ? "Create a group" :
                       chatDialog.type === "add-member" ? "Add a member" :
+                        chatDialog.type === "confirm-accept" ? "Accept this challenge?" :
                         chatDialog.type === "confirm-vote" ? (chatDialog.isChange ? "Change your vote?" : "Confirm your vote") :
                           chatDialog.title}
                   </DialogTitle>
                   <DialogDescription>
                     {chatDialog.type === "create-group" ? "Start a private chat. Only members you add will be able to see it." :
                       chatDialog.type === "add-member" ? `Invite a registered user to ${chatDialog.groupName}.` :
+                        chatDialog.type === "confirm-accept" ? `Accept ${chatDialog.challenger}'s challenge and commit ${chatDialog.stake} ${chatDialog.currency}.` :
                         chatDialog.type === "confirm-vote" ? `Submit your vote for ${chatDialog.candidateName}. This may resolve the bet once quorum is reached.` :
                           chatDialog.description}
                   </DialogDescription>
@@ -881,6 +940,17 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
                     </Button>
                     <Button onClick={() => { void submitVote(chatDialog); }} disabled={dialogBusy}>
                       {dialogBusy ? "Submitting..." : `Vote for ${chatDialog.candidateName}`}
+                    </Button>
+                  </DialogFooter>
+                )}
+
+                {chatDialog.type === "confirm-accept" && (
+                  <DialogFooter className="mt-6">
+                    <Button variant="outline" onClick={() => setChatDialog(null)} disabled={dialogBusy}>
+                      Cancel
+                    </Button>
+                    <Button onClick={() => { void submitAccept(chatDialog); }} disabled={dialogBusy}>
+                      {dialogBusy ? "Accepting..." : "Accept challenge"}
                     </Button>
                   </DialogFooter>
                 )}

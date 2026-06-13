@@ -63,8 +63,29 @@ export interface BetDoc {
   votesByVoter?: Record<string, "challenger" | "acceptor">;
   /** Winning side once witness quorum is met. */
   resolvedWinner?: "challenger" | "acceptor";
+  /** User who accepted the challenge and activated the bet. */
+  acceptedBy?: string;
+  /** Unix ms when the challenge was accepted. */
+  acceptedAt?: number;
   /** On-chain commitment / sports-bet PDA once staked (optional). */
   commitmentId?: string;
+  // ── on-chain escrow (SOL bets only) ──────────────────────────────────────────
+  /** True once this bet is escrowed on-chain (currency === "SOL"). */
+  onChain?: boolean;
+  /** sportsBet PDA backing this bet (mirrors commitmentId). */
+  betPda?: string;
+  /** Username of the wallet that staked the opposing side on-chain. */
+  opponentUsername?: string;
+  /** On-chain accept-window kickoff (unix seconds); accept must precede it. */
+  startTime?: number;
+  /** Earliest on-chain settle time (unix seconds). */
+  settleAfter?: number;
+  /** Lifecycle of the on-chain escrow account. */
+  onChainState?: "open" | "locked" | "settled" | "cancelled";
+  /** Transaction signatures for the create / accept / settle steps. */
+  createSig?: string;
+  acceptSig?: string;
+  settleSig?: string;
 }
 
 export interface ProfileDoc {
@@ -105,6 +126,10 @@ export interface UserDoc {
   usernameLower: string;
   passwordHash: string;
   createdAt: number;
+  /** Custodial Solana wallet (base58 pubkey), provisioned on first need. */
+  walletPubkey?: string;
+  /** AES-GCM encrypted secret key for the custodial wallet. Never sent to clients. */
+  walletSecret?: string;
 }
 
 // ── lazy singleton connection ──────────────────────────────────────────────────

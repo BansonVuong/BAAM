@@ -23,7 +23,7 @@ import fs from "fs";
 import http from "http";
 import os from "os";
 import path from "path";
-import { AnchorProvider, Program, Wallet, web3 } from "@anchor-lang/core";
+import { AnchorProvider, BN, Program, Wallet, web3 } from "@anchor-lang/core";
 
 import { fetchGameResult, fetchScoreboard, type Sport } from "./scraper";
 import {
@@ -46,8 +46,19 @@ const DEFAULT_USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
 const AUTH_SECRET = process.env.AUTH_SECRET ?? "dev-only-insecure-auth-secret";
 const AUTH_SESSION_TTL_MS = Number(process.env.AUTH_SESSION_TTL_MS ?? 1000 * 60 * 60 * 24 * 30);
 
+// Custodial wallets + on-chain SOL bets.
+//   WALLET_SECRET_KEY      encryption key for stored wallet secrets (falls back to AUTH_SECRET)
+//   WALLET_AIRDROP_LAMPORTS devnet airdrop per new wallet (default 2 SOL)
+//   SOCIAL_BET_WINDOW_SECS  accept window for on-chain chat bets (default 120s)
+const WALLET_AIRDROP_LAMPORTS = Number(process.env.WALLET_AIRDROP_LAMPORTS ?? 2 * web3.LAMPORTS_PER_SOL);
+const SOCIAL_BET_WINDOW_SECS  = Number(process.env.SOCIAL_BET_WINDOW_SECS ?? 120);
+const SOCIAL_BET_SPORT        = 0; // reuse the sportsBet program; sport is irrelevant for chat bets
+
 const VAULT_SEED        = Buffer.from("vault");
+const SPORTS_BET_SEED   = Buffer.from("sports_bet");
 const SPORTS_VAULT_SEED = Buffer.from("sports_vault");
+
+const WALLET_ENC_KEY = deriveWalletKey();
 
 // ── Solana setup ──────────────────────────────────────────────────────────────
 
@@ -57,6 +68,108 @@ const provider   = new AnchorProvider(connection, new Wallet(oracle), AnchorProv
 const program    = new Program<Accountability>(idl as Accountability, provider);
 const profileWallet = parsePublicKey(process.env.PROFILE_WALLET, oracle.publicKey);
 const usdcMint = parsePublicKey(process.env.USDC_MINT, new web3.PublicKey(DEFAULT_USDC_MINT));
+
+// ── custodial wallets ───────────────────────────────────────────────────────────
+// Each user gets a relayer-managed devnet keypair. The secret is stored encrypted;
+// the relayer signs create/accept on the user's behalf (settle is signed by the oracle).
+
+function deriveWalletKey(): Buffer {
+  const raw = process.env.WALLET_SECRET_KEY;
+  if (raw && raw.length > 0) return crypto.createHash("sha256").update(raw).digest();
+  console.warn("WALLET_SECRET_KEY not set; deriving custodial wallet key from AUTH_SECRET");
+  return crypto.createHash("sha256").update(`wallet:${AUTH_SECRET}`).digest();
+}
+
+function encryptSecret(plain: Buffer): string {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", WALLET_ENC_KEY, iv);
+  const enc = Buffer.concat([cipher.update(plain), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${iv.toString("hex")}:${tag.toString("hex")}:${enc.toString("hex")}`;
+}
+
+function decryptSecret(stored: string): Buffer {
+  const [ivHex, tagHex, dataHex] = stored.split(":");
+  if (!ivHex || !tagHex || !dataHex) throw new Error("malformed wallet secret");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", WALLET_ENC_KEY, Buffer.from(ivHex, "hex"));
+  decipher.setAuthTag(Buffer.from(tagHex, "hex"));
+  return Buffer.concat([decipher.update(Buffer.from(dataHex, "hex")), decipher.final()]);
+}
+
+function loadUserKeypair(user: UserDoc): web3.Keypair {
+  if (!user.walletSecret) throw new Error(`user ${user.username} has no custodial wallet`);
+  return web3.Keypair.fromSecretKey(Uint8Array.from(decryptSecret(user.walletSecret)));
+}
+
+const isDevnet = /devnet/i.test(RPC_URL);
+
+async function airdrop(pubkey: web3.PublicKey, lamports: number): Promise<void> {
+  if (!isDevnet || lamports <= 0) return;
+  const sig = await connection.requestAirdrop(pubkey, lamports);
+  const bh = await connection.getLatestBlockhash();
+  await connection.confirmTransaction({ signature: sig, ...bh }, "confirmed");
+  console.log(`airdropped ${lamports / web3.LAMPORTS_PER_SOL} SOL to ${pubkey.toBase58()}`);
+}
+
+/** Top up a custodial wallet (devnet only) when it can't cover a pending stake. */
+async function ensureFunds(pubkey: web3.PublicKey, needLamports: number): Promise<void> {
+  if (!isDevnet) return;
+  const buffer = 0.02 * web3.LAMPORTS_PER_SOL; // rent + fees headroom
+  const balance = await connection.getBalance(pubkey, "confirmed");
+  if (balance >= needLamports + buffer) return;
+  await airdrop(pubkey, Math.max(WALLET_AIRDROP_LAMPORTS, needLamports + buffer)).catch((err) =>
+    console.warn(`top-up airdrop failed for ${pubkey.toBase58()}:`, err instanceof Error ? err.message : err),
+  );
+}
+
+/** Provision (and devnet-fund) a custodial wallet on first need; mutates `user`. */
+async function ensureUserWallet(user: UserDoc): Promise<web3.Keypair> {
+  if (user.walletPubkey && user.walletSecret) return loadUserKeypair(user);
+  const col = await users();
+  if (!col) throw new Error("database unavailable");
+  const kp = web3.Keypair.generate();
+  user.walletPubkey = kp.publicKey.toBase58();
+  user.walletSecret = encryptSecret(Buffer.from(kp.secretKey));
+  await col.updateOne({ id: user.id }, { $set: { walletPubkey: user.walletPubkey, walletSecret: user.walletSecret } });
+  await airdrop(kp.publicKey, WALLET_AIRDROP_LAMPORTS).catch((err) =>
+    console.warn(`airdrop failed for ${user.walletPubkey}:`, err instanceof Error ? err.message : err),
+  );
+  return kp;
+}
+
+/** A Program bound to `keypair` as fee-payer/signer (the oracle `program` settles). */
+function programAs(keypair: web3.Keypair): Program<Accountability> {
+  const prov = new AnchorProvider(connection, new Wallet(keypair), AnchorProvider.defaultOptions());
+  return new Program<Accountability>(idl as Accountability, prov);
+}
+
+// ── on-chain chat-bet (reuses the sportsBet escrow) ─────────────────────────────
+
+function gameIdBytes(id: string): number[] {
+  if (Buffer.byteLength(id, "utf8") > 32) throw new Error("bet id too long for on-chain game id");
+  const buf = Buffer.alloc(32);
+  Buffer.from(id, "utf8").copy(buf);
+  return Array.from(buf);
+}
+
+function sportsBetPda(creator: web3.PublicKey, gameId: number[]): web3.PublicKey {
+  return web3.PublicKey.findProgramAddressSync(
+    [SPORTS_BET_SEED, creator.toBuffer(), Buffer.from(gameId)],
+    program.programId,
+  )[0];
+}
+
+function sportsVaultPda(bet: web3.PublicKey): web3.PublicKey {
+  return web3.PublicKey.findProgramAddressSync([SPORTS_VAULT_SEED, bet.toBuffer()], program.programId)[0];
+}
+
+function solStakeToLamports(stake: string): number {
+  const n = Number(stake);
+  if (!Number.isFinite(n) || n <= 0) throw new Error("invalid SOL stake");
+  const lamports = Math.round(n * web3.LAMPORTS_PER_SOL);
+  if (lamports <= 0) throw new Error("SOL stake too small");
+  return lamports;
+}
 
 // ── original accountability crank ─────────────────────────────────────────────
 
@@ -212,6 +325,10 @@ async function crankSportsBets(): Promise<void> {
     // Decode game_id ([u8; 32], zero-padded) back to a string
     const gameId = decodeGameId(bet.gameId);
 
+    // Chat bets reuse this escrow but store a non-numeric bet id as the game id and
+    // are settled from witness votes by crankWitnessBets — never from ESPN.
+    if (!/^\d+$/.test(gameId)) continue;
+
     // sport is stored as a u8 enum: 0=soccer, 1=nba, 2=nfl
     const sport: Sport = SPORT_NAMES[bet.sport as number] ?? "soccer";
 
@@ -252,6 +369,83 @@ async function crankSportsBets(): Promise<void> {
       console.log(`Settled bet ${betPubkey.toBase58()}: ${sig}`);
     } catch (err) {
       console.error(`settle failed for ${betPubkey.toBase58()}:`, err);
+    }
+  }
+}
+
+// ── chat-bet crank (witness-vote settled) ──────────────────────────────────────
+// Settles on-chain SOL chat bets from their off-chain resolution: pays the winner
+// once both sides have staked (Locked) and a witness quorum picked a side, and
+// refunds the creator if the accept window lapses with no opponent.
+
+async function crankWitnessBets(): Promise<void> {
+  const betsCol = await bets();
+  const usersCol = await users();
+  if (!betsCol || !usersCol) return;
+
+  const slot = await connection.getSlot("confirmed");
+  const now = await connection.getBlockTime(slot);
+  if (now === null) return;
+
+  const docs = await betsCol
+    .find({ onChain: true, onChainState: { $in: ["open", "locked"] } }, { projection: { _id: 0 } })
+    .toArray();
+
+  for (const doc of docs) {
+    const bet = normalizeBetDoc(doc);
+    if (!bet.betPda) continue;
+    const betPubkey = new web3.PublicKey(bet.betPda);
+
+    let acct: Awaited<ReturnType<typeof program.account.sportsBet.fetch>>;
+    try {
+      acct = await program.account.sportsBet.fetch(betPubkey);
+    } catch {
+      continue; // already closed (settled/cancelled) on-chain
+    }
+    const vault = sportsVaultPda(betPubkey);
+
+    if ("locked" in acct.state) {
+      if (!bet.resolvedWinner || !acct.opponent) continue;
+      if (acct.settleAfter.toNumber() > now) continue;
+      // creator backs "home"/challenger, so home_won === challenger won.
+      const homeWon = bet.resolvedWinner === "challenger";
+      try {
+        const sig = await program.methods
+          .settleBet(homeWon)
+          .accountsStrict({
+            oracle: oracle.publicKey,
+            creator: acct.creator,
+            opponent: acct.opponent,
+            sportsBet: betPubkey,
+            vault,
+          })
+          .rpc();
+        await betsCol.updateOne(
+          { id: bet.id },
+          { $set: { settleSig: sig, onChainState: "settled", status: "COMPLETED" } },
+        );
+        console.log(`settled chat bet ${bet.id} (winner=${bet.resolvedWinner}): ${sig}`);
+      } catch (err) {
+        console.error(`settle failed for chat bet ${bet.id}:`, err);
+      }
+    } else if ("open" in acct.state) {
+      // Accept window elapsed with no opponent — refund the creator and close out.
+      if (acct.startTime.toNumber() > now) continue;
+      const challengerUser = await usersCol.findOne({ usernameLower: bet.challenger.toLowerCase() });
+      if (!challengerUser?.walletSecret) continue;
+      try {
+        const sig = await programAs(loadUserKeypair(challengerUser))
+          .methods.cancelBet()
+          .accountsStrict({ creator: acct.creator, sportsBet: betPubkey, vault })
+          .rpc();
+        await betsCol.updateOne(
+          { id: bet.id },
+          { $set: { onChainState: "cancelled", status: "COMPLETED", createSig: bet.createSig ?? sig } },
+        );
+        console.log(`refunded expired chat bet ${bet.id}: ${sig}`);
+      } catch (err) {
+        console.error(`refund failed for chat bet ${bet.id}:`, err);
+      }
     }
   }
 }
@@ -314,6 +508,9 @@ const server = http.createServer(async (req, res) => {
         createdAt: now,
       };
       await col.insertOne(user);
+      await ensureUserWallet(user).catch((err) =>
+        console.warn("wallet provisioning failed on signup:", err instanceof Error ? err.message : err),
+      );
       const token = signAuthToken(user.id, user.email, user.username);
       return json(res, 201, { token, user: toPublicUser(user) });
     }
@@ -331,6 +528,9 @@ const server = http.createServer(async (req, res) => {
       if (!user || !verifyPassword(password, user.passwordHash)) {
         return json(res, 401, { error: "invalid email or password" });
       }
+      await ensureUserWallet(user).catch((err) =>
+        console.warn("wallet provisioning failed on login:", err instanceof Error ? err.message : err),
+      );
       const token = signAuthToken(user.id, user.email, user.username);
       return json(res, 200, { token, user: toPublicUser(user) });
     }
@@ -345,17 +545,32 @@ const server = http.createServer(async (req, res) => {
     // GET /profile
     if (req.method === "GET" && req.url === "/profile") {
       const authUser = await getAuthenticatedUser(req);
-      const usdcBalance = await fetchUsdcBalance(profileWallet, usdcMint).catch((err) => {
+      let wallet = profileWallet;
+      if (authUser) {
+        await ensureUserWallet(authUser).catch((err) =>
+          console.warn("wallet provisioning failed on profile:", err instanceof Error ? err.message : err),
+        );
+        if (authUser.walletPubkey) wallet = new web3.PublicKey(authUser.walletPubkey);
+      }
+      const usdcBalance = await fetchUsdcBalance(wallet, usdcMint).catch((err) => {
         console.error("failed to fetch USDC balance:", err);
         return 0;
       });
+      const solBalance = await connection
+        .getBalance(wallet, "confirmed")
+        .then((lamports) => lamports / web3.LAMPORTS_PER_SOL)
+        .catch((err) => {
+          console.error("failed to fetch SOL balance:", err);
+          return 0;
+        });
       return json(res, 200, {
         name: authUser?.username ?? PROFILE_NAME,
         initials: authUser ? toInitials(authUser.username) : PROFILE_INITIALS,
         github: authUser?.username ?? PROFILE_GITHUB,
-        wallet: profileWallet.toBase58(),
+        wallet: wallet.toBase58(),
         usdcMint: usdcMint.toBase58(),
         usdcBalance,
+        solBalance,
       });
     }
 
@@ -634,6 +849,56 @@ const server = http.createServer(async (req, res) => {
       };
       await betsCol.insertOne(betDoc);
 
+      // SOL bets escrow real lamports on-chain from the challenger's custodial wallet.
+      // The opponent stakes later via POST /bets/accept; the oracle settles from votes.
+      if (currency === "SOL") {
+        try {
+          const challengerKp = await ensureUserWallet(authUser);
+          const amountLamports = solStakeToLamports(stakeInput);
+          await ensureFunds(challengerKp.publicKey, amountLamports);
+          const startTime = Math.floor(now / 1000) + SOCIAL_BET_WINDOW_SECS;
+          const settleAfter = startTime + 1;
+          const gid = gameIdBytes(betDoc.id);
+          const betPda = sportsBetPda(challengerKp.publicKey, gid);
+          const vault = sportsVaultPda(betPda);
+          const sig = await programAs(challengerKp)
+            .methods.createBet(
+              new BN(amountLamports),
+              oracle.publicKey,
+              SOCIAL_BET_SPORT,
+              gid,
+              true, // creator (challenger) backs the "home"/challenger side
+              new BN(startTime),
+              new BN(settleAfter),
+            )
+            .accountsStrict({
+              creator: challengerKp.publicKey,
+              sportsBet: betPda,
+              vault,
+              systemProgram: web3.SystemProgram.programId,
+            })
+            .rpc();
+          Object.assign(betDoc, {
+            onChain: true,
+            betPda: betPda.toBase58(),
+            commitmentId: betPda.toBase58(),
+            startTime,
+            settleAfter,
+            onChainState: "open" as const,
+            createSig: sig,
+          });
+          await betsCol.updateOne({ id: betDoc.id }, { $set: {
+            onChain: true, betPda: betDoc.betPda, commitmentId: betDoc.commitmentId,
+            startTime, settleAfter, onChainState: "open", createSig: sig,
+          } });
+        } catch (err) {
+          await betsCol.deleteOne({ id: betDoc.id });
+          return json(res, 502, {
+            error: `failed to escrow SOL on-chain: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
+      }
+
       const systemMessage: MessageDoc = {
         id: `m-${now}-${crypto.randomBytes(2).toString("hex")}`,
         groupId,
@@ -658,6 +923,94 @@ const server = http.createServer(async (req, res) => {
       );
 
       return json(res, 201, { bet: normalizeBetDoc(betDoc), message: systemMessage });
+    }
+
+    // POST /bets/accept  { betId }  — intended opponent accepts and activates a pending bet
+    if (req.method === "POST" && req.url === "/bets/accept") {
+      const authUser = await getAuthenticatedUser(req);
+      if (!authUser) return json(res, 401, { error: "unauthorized" });
+      const betsCol = await bets();
+      const groupsCol = await groups();
+      const messagesCol = await messages();
+      if (!betsCol || !groupsCol || !messagesCol) return dbUnconfigured(res);
+
+      const body = await readJson(req);
+      const betId = typeof body.betId === "string" ? body.betId.trim() : "";
+      if (!betId) return json(res, 400, { error: "betId is required" });
+
+      const existing = await betsCol.findOne({ id: betId }, { projection: { _id: 0 } });
+      if (!existing) return json(res, 404, { error: "bet not found" });
+      const bet = normalizeBetDoc(existing);
+      if (bet.status !== "PENDING") {
+        return json(res, 409, { error: "bet is no longer open for acceptance", bet });
+      }
+
+      const linkedMessage = bet.groupId ? null : await messagesCol.findOne({ betId }, { projection: { groupId: 1 } });
+      const groupId = bet.groupId ?? linkedMessage?.groupId;
+      const group = groupId ? await groupsCol.findOne({ id: groupId }, { projection: { _id: 0 } }) : null;
+      if (!group || !isGroupMember(group, authUser.username)) {
+        return json(res, 403, { error: "group membership required" });
+      }
+      if (authUser.username.toLowerCase() === bet.challenger.toLowerCase()) {
+        return json(res, 400, { error: "you cannot accept your own bet" });
+      }
+      const addressed = bet.acceptor && bet.acceptor.toLowerCase() !== "anyone";
+      if (addressed && bet.acceptor.toLowerCase() !== authUser.username.toLowerCase()) {
+        return json(res, 403, { error: "this bet is addressed to someone else" });
+      }
+
+      const acceptedAt = Date.now();
+      const update: Partial<BetDoc> = {
+        status: "ACTIVE",
+        opponentUsername: authUser.username,
+        acceptedBy: authUser.username,
+        acceptedAt,
+      };
+      // "anyone" DEV bets adopt the actual acceptor so the card shows who accepted.
+      if (!addressed) update.acceptor = authUser.username;
+
+      if (bet.currency !== "SOL") {
+        const result = await betsCol.updateOne(
+          { id: betId, status: "PENDING" },
+          { $set: update },
+        );
+        if (result.modifiedCount !== 1) {
+          return json(res, 409, { error: "bet was already accepted" });
+        }
+        const updated = await betsCol.findOne({ id: betId }, { projection: { _id: 0 } });
+        return json(res, 200, { bet: updated ? normalizeBetDoc(updated) : { ...bet, ...update } });
+      }
+
+      if (!bet.onChain || !bet.betPda || bet.onChainState !== "open") {
+        return json(res, 409, { error: "SOL bet is no longer open for on-chain acceptance", bet });
+      }
+      try {
+        const acceptorKp = await ensureUserWallet(authUser);
+        const amountLamports = solStakeToLamports(bet.stake);
+        await ensureFunds(acceptorKp.publicKey, amountLamports);
+        const betPda = new web3.PublicKey(bet.betPda);
+        const vault = sportsVaultPda(betPda);
+        const sig = await programAs(acceptorKp)
+          .methods.acceptBet()
+          .accountsStrict({
+            opponent: acceptorKp.publicKey,
+            sportsBet: betPda,
+            vault,
+            systemProgram: web3.SystemProgram.programId,
+          })
+          .rpc();
+        Object.assign(update, {
+          onChainState: "locked",
+          acceptSig: sig,
+        });
+        await betsCol.updateOne({ id: betId, status: "PENDING" }, { $set: update });
+        const updated = await betsCol.findOne({ id: betId }, { projection: { _id: 0 } });
+        return json(res, 200, { bet: updated ? normalizeBetDoc(updated) : { ...bet, ...update } });
+      } catch (err) {
+        return json(res, 502, {
+          error: `failed to stake on-chain: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
     }
 
     // GET /bets  — bets linked to the current user's groups
@@ -720,6 +1073,16 @@ const server = http.createServer(async (req, res) => {
       if (isBetCompletedStatus(current.status)) {
         return json(res, 409, { error: "bet is already completed", bet: current });
       }
+      if (current.status !== "ACTIVE") {
+        return json(res, 409, { error: "bet must be accepted before voting", bet: current });
+      }
+      // On-chain SOL bets can only be resolved once both sides have staked (locked).
+      if (current.onChain && current.currency === "SOL" && current.onChainState !== "locked") {
+        return json(res, 409, {
+          error: "both sides must stake before this bet can be voted on",
+          bet: current,
+        });
+      }
 
       const nextVotesByVoter: Record<string, BetVoteChoice> = {
         ...current.votesByVoter,
@@ -735,9 +1098,7 @@ const server = http.createServer(async (req, res) => {
             : undefined;
       const nextStatus: BetDoc["status"] = winner
         ? "COMPLETED"
-        : current.status === "PENDING" && votes.total > 0
-          ? "ACTIVE"
-          : current.status;
+        : current.status;
 
       await col.updateOne(
         { id: betId },
@@ -870,6 +1231,7 @@ async function runPoll(): Promise<void> {
   try {
     await crankTimeouts();
     await crankSportsBets();
+    await crankWitnessBets();
   } catch (err) {
     console.error("poll error:", err);
   }
@@ -993,6 +1355,7 @@ function toPublicUser(user: UserDoc): {
   username: string;
   initials: string;
   createdAt: number;
+  walletPubkey?: string;
 } {
   return {
     id: user.id,
@@ -1000,6 +1363,7 @@ function toPublicUser(user: UserDoc): {
     username: user.username,
     initials: toInitials(user.username),
     createdAt: user.createdAt,
+    walletPubkey: user.walletPubkey,
   };
 }
 

@@ -132,6 +132,8 @@ export interface ProfileSummary {
   wallet: string;
   usdcMint: string;
   usdcBalance: number;
+  /** Devnet SOL balance of the (custodial) wallet. */
+  solBalance: number;
 }
 
 /** Profile details plus current USDC balance for the configured profile wallet. */
@@ -262,7 +264,22 @@ export interface Bet {
   groupSize: number;
   votesByVoter?: Record<string, BetVoteChoice>;
   resolvedWinner?: BetVoteChoice;
+  acceptedBy?: string;
+  acceptedAt?: number;
   commitmentId?: string;
+  // ── on-chain escrow (SOL bets only) ──────────────────────────────────────────
+  /** True once this bet is escrowed on-chain. */
+  onChain?: boolean;
+  /** sportsBet PDA backing the escrow. */
+  betPda?: string;
+  /** Username that staked the opposing side on-chain. */
+  opponentUsername?: string;
+  /** Lifecycle of the on-chain escrow account. */
+  onChainState?: "open" | "locked" | "settled" | "cancelled";
+  /** Transaction signatures for the create / accept / settle steps. */
+  createSig?: string;
+  acceptSig?: string;
+  settleSig?: string;
 }
 
 export interface Player {
@@ -333,6 +350,11 @@ export function createBet(input: {
   return req("/bets", { method: "POST", body: JSON.stringify(input) });
 }
 
+/** Accept a pending challenge as its intended opponent. */
+export function acceptBet(betId: string): Promise<{ bet: Bet }> {
+  return req("/bets/accept", { method: "POST", body: JSON.stringify({ betId }) });
+}
+
 /** All bets. */
 export function getBets(): Promise<{ bets: Bet[] }> {
   return req("/bets");
@@ -344,6 +366,11 @@ export function voteBet(input: {
   votedFor: BetVoteChoice;
 }): Promise<{ bet: Bet }> {
   return req("/bets/vote", { method: "POST", body: JSON.stringify(input) });
+}
+
+/** Solana explorer link for a devnet transaction signature. */
+export function explorerTxUrl(signature: string): string {
+  return `https://explorer.solana.com/tx/${signature}?cluster=devnet`;
 }
 
 /** Players ranked by $PALS. */
