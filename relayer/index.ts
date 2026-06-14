@@ -1329,9 +1329,9 @@ const server = http.createServer(async (req, res) => {
       if (type === "DEV" && !isSports) {
         return json(res, 400, { error: "DEV bets are sports bets now; include sport and gameId" });
       }
-      let acceptor = type === "DEV" ? (acceptorInput || "anyone") : acceptorInput;
-      if (!acceptor) return json(res, 400, { error: "acceptor is required" });
-      if (acceptorInput && acceptorInput.toLowerCase() === challenger.toLowerCase()) {
+      const acceptorIsOpen = !acceptorInput || acceptorInput.toLowerCase() === "anyone";
+      let acceptor = acceptorIsOpen ? "anyone" : acceptorInput;
+      if (!acceptorIsOpen && acceptorInput.toLowerCase() === challenger.toLowerCase()) {
         return json(res, 400, { error: "you cannot challenge yourself" });
       }
       if (isIMessage) {
@@ -1344,13 +1344,17 @@ const server = http.createServer(async (req, res) => {
         if (!conversation || !conversation.memberUserIds.includes(authUser.id)) {
           return json(res, 403, { error: "join this conversation before creating a bet" });
         }
-        const canonicalAcceptor = conversation.memberUsernames.find(
-          (username) => username.toLowerCase() === acceptorInput.toLowerCase(),
-        );
-        if (!canonicalAcceptor) {
-          return json(res, 400, { error: "recipient has not joined this conversation" });
+        if (!acceptorIsOpen) {
+          const canonicalAcceptor = conversation.memberUsernames.find(
+            (username) => username.toLowerCase() === acceptorInput.toLowerCase(),
+          );
+          if (!canonicalAcceptor) {
+            return json(res, 400, { error: "recipient has not joined this conversation" });
+          }
+          acceptor = canonicalAcceptor;
+        } else {
+          acceptor = "anyone";
         }
-        acceptor = canonicalAcceptor;
       }
       if (isDiscord) {
         if (!discordConversationId) {
@@ -1362,7 +1366,7 @@ const server = http.createServer(async (req, res) => {
         if (!conversation || !conversation.memberUserIds.includes(authUser.id)) {
           return json(res, 403, { error: "you must be a member of this Discord channel's conversation" });
         }
-        if (acceptorInput && acceptorInput.toLowerCase() !== "anyone") {
+        if (!acceptorIsOpen) {
           const canonicalAcceptor = conversation.memberUsernames.find(
             (username) => username.toLowerCase() === acceptorInput.toLowerCase(),
           );
@@ -1437,8 +1441,8 @@ const server = http.createServer(async (req, res) => {
       const group = groupId
         ? await groupsCol.findOne({ id: groupId }, { projection: { _id: 0 } })
         : null;
-      if (!isIMessage && !group) return json(res, 404, { error: "group not found" });
-      if (!isIMessage && group && !isGroupMember(group, authUser.username)) {
+      if (!isIMessage && !isDiscord && !group) return json(res, 404, { error: "group not found" });
+      if (!isIMessage && !isDiscord && group && !isGroupMember(group, authUser.username)) {
         return json(res, 403, { error: "group membership required" });
       }
       let challengerKp: web3.Keypair;

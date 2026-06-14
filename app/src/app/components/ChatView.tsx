@@ -863,17 +863,7 @@ export function ChatView({
     const selectedRecipient = recipientCandidates.find(
       (username) => username.toLowerCase() === normalizedAcceptorInput,
     );
-    const normalizedAcceptor = bet.sport
-      ? (selectedRecipient ?? "anyone")
-      : selectedRecipient;
-    if (!normalizedAcceptor) {
-      showResult(
-        "Recipient required",
-        "Pick a valid member of this group as the bet recipient.",
-        "error",
-      );
-      return;
-    }
+    const normalizedAcceptor = selectedRecipient ?? "anyone";
     void createBet({
       groupId,
       type: bet.type,

@@ -422,9 +422,14 @@ final class BetMessageViewModel: ObservableObject {
             $0.caseInsensitiveCompare(currentUser.username) != .orderedSame
         }.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
         recipientCandidates = candidates
-        recipientUsername = candidates.first(where: {
-            $0.caseInsensitiveCompare(recipientUsername) == .orderedSame
-        }) ?? candidates.first ?? ""
+        let existingRecipient = recipientUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        if existingRecipient.isEmpty || existingRecipient.caseInsensitiveCompare("anyone") == .orderedSame {
+            recipientUsername = ""
+        } else {
+            recipientUsername = candidates.first(where: {
+                $0.caseInsensitiveCompare(existingRecipient) == .orderedSame
+            }) ?? ""
+        }
     }
 
     private func buildCreateBetRequest() throws -> MessageCreateBetRequest {
@@ -436,10 +441,15 @@ final class BetMessageViewModel: ObservableObject {
             throw RelayerClientError.server("Stake must be a positive SOL amount.")
         }
         let selectedRecipient = recipientUsername.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let normalizedAcceptor = recipientCandidates.first(where: {
+        let normalizedAcceptor: String
+        if selectedRecipient.isEmpty || selectedRecipient.caseInsensitiveCompare("anyone") == .orderedSame {
+            normalizedAcceptor = "anyone"
+        } else if let canonical = recipientCandidates.first(where: {
             $0.caseInsensitiveCompare(selectedRecipient) == .orderedSame
-        }) else {
-            throw RelayerClientError.server("Choose a joined member from this conversation.")
+        }) {
+            normalizedAcceptor = canonical
+        } else {
+            throw RelayerClientError.server("Choose a joined member or Open challenge.")
         }
 
         let sportsMode = betType == .DEV
@@ -480,7 +490,7 @@ final class BetMessageViewModel: ObservableObject {
     private func clearComposeForm() {
         terms = ""
         stake = ""
-        recipientUsername = recipientCandidates.first ?? ""
+        recipientUsername = ""
         backsHome = true
         selectedGame = nil
     }

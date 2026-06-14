@@ -133,22 +133,18 @@ export function SendBetModal({
     if (!acceptor) return;
     if (!hasSelectedAcceptor) setAcceptor("");
   }, [acceptor, hasSelectedAcceptor]);
-
-  const canStep1 = hasChallengeTargets && (
-    isSports ? selectedGame !== null
-    : hasSelectedAcceptor
-  );
+  const canStep1 = isSports ? selectedGame !== null : true;
   const canStep2 = isSports ? selectedGame !== null : terms.trim().length > 8;
   const canStep3 = stake.trim().length > 0 && Number(stake) > 0;
-  const summaryAcceptor = isSports ? (acceptor.trim() || "Anyone") : acceptor.trim();
+  const summaryAcceptor = selectedAcceptor || "Anyone";
 
   function handleSend() {
-    if (!hasChallengeTargets || (!isSports && !hasSelectedAcceptor) || (isSports && !selectedGame)) return;
+    if (isSports && !selectedGame) return;
     setSent(true);
     onSend({
       type:     betType,
       challenger: "Me",
-      acceptor: isSports ? (selectedAcceptor || "anyone") : selectedAcceptor,
+      acceptor: selectedAcceptor || "anyone",
       terms:    isSports ? sportsTerms : terms.trim(),
       stake:    stake,
       currency: "SOL",
@@ -261,11 +257,11 @@ export function SendBetModal({
                     {!hasChallengeTargets && (
                       <div
                         className="flex items-start gap-2.5 p-3 rounded-xl"
-                        style={{ background: "rgba(255,74,74,0.08)", border: "1px solid rgba(255,74,74,0.25)" }}
+                        style={{ background: "rgba(153,69,255,0.08)", border: "1px solid rgba(153,69,255,0.25)" }}
                       >
-                        <AlertCircle size={13} style={{ color: "#FF7E7E", marginTop: 1, flexShrink: 0 }} />
+                        <AlertCircle size={13} style={{ color: "#9945FF", marginTop: 1, flexShrink: 0 }} />
                         <p className="text-muted-foreground leading-snug" style={{ fontSize: "11px" }}>
-                          This group has no challenge targets yet. Add at least one member before posting a bet.
+                          No direct recipients are available yet. You can still post this as an open challenge.
                         </p>
                       </div>
                     )}
@@ -446,7 +442,7 @@ export function SendBetModal({
                               key={member.name}
                               whileHover={{ scale: 1.04 }}
                               whileTap={{ scale: 0.95 }}
-                              onClick={() => setAcceptor(member.name)}
+                              onClick={() => setAcceptor(isSelected ? "" : member.name)}
                               className="flex items-center gap-2 px-3 py-1.5 rounded-xl border transition-all duration-150"
                               style={{
                                 background:  isSelected ? "rgba(153,69,255,0.1)" : "var(--muted)",
@@ -463,10 +459,13 @@ export function SendBetModal({
                         })}
                         {!challengeTargets.length && (
                           <span className="text-muted-foreground" style={{ fontSize: "11px" }}>
-                            No members available to challenge in this group yet.
+                            No direct recipients available yet — this will post as an open challenge.
                           </span>
                         )}
                       </div>
+                      <Mono className="text-muted-foreground block" style={{ fontSize: "9px" } as React.CSSProperties}>
+                        Leave this unselected (or tap the selected member again) to post an open challenge anyone can accept.
+                      </Mono>
                     </motion.div>
                   </motion.div>
                 )}

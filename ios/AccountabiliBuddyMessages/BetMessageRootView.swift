@@ -234,19 +234,16 @@ struct BetMessageRootView: View {
             }
             .pickerStyle(.segmented)
             Picker("Bet with", selection: $viewModel.recipientUsername) {
-                if viewModel.recipientCandidates.isEmpty {
-                    Text("No one found yet").tag("")
-                }
+                Text("Open challenge (anyone)").tag("")
                 ForEach(viewModel.recipientCandidates, id: \.self) { username in
                     Text("@\(username)").tag(username)
                 }
             }
             .pickerStyle(.menu)
-            .disabled(viewModel.recipientCandidates.isEmpty)
 
             Text(viewModel.recipientCandidates.isEmpty
-                 ? "No one else has joined yet. Ask someone to open the invite card and join."
-                 : "Choose a joined AccountabiliBuddy member from this conversation.")
+                 ? "No one else has joined yet. Open challenge works now and can be accepted once someone joins."
+                 : "Choose a joined member, or keep Open challenge so anyone can accept.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -279,7 +276,6 @@ struct BetMessageRootView: View {
             .buttonStyle(.borderedProminent)
             .disabled(
                 viewModel.isBusy
-                || viewModel.recipientCandidates.isEmpty
                 || (viewModel.betType == .DEV && viewModel.selectedGame == nil)
             )
         }
