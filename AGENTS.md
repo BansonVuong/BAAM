@@ -51,6 +51,8 @@ npm run check
 ## Production Deployment
 
 - Only GitHub `main` deploys to production.
+- The user has granted standing approval to push verified changes to `main`;
+  do not ask for separate confirmation before each push.
 - Feature branch pushes do not deploy.
 - The server checks `origin/main` every minute using
   `accountabilibuddy-update.timer`.
