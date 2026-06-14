@@ -41,7 +41,7 @@ const betCards: BetCard[] = [
     challenger: "Kevin",
     acceptor: "Matt",
     terms: "Kevin wagers Matt that Matt cannot run a 5k tomorrow morning",
-    stake: "500 POINTS",
+    stake: "0.05 SOL",
     status: "PENDING",
     witnesses: 2,
     minBettors: 2,
