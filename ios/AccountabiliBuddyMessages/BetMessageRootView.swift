@@ -166,6 +166,16 @@ struct BetMessageRootView: View {
                 Text(conversation.members.map { "@\($0)" }.joined(separator: ", "))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Button {
+                    viewModel.resendConversationInvite { draft in
+                        onSendDraft(draft)
+                    }
+                } label: {
+                    Label("Resend invite card", systemImage: "paperplane")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(viewModel.isBusy)
             } else {
                 Text("This conversation hasn’t been initialized")
                     .font(.headline)

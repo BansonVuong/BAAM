@@ -211,6 +211,25 @@ final class BetMessageViewModel: ObservableObject {
         isBusy = false
     }
 
+    func resendConversationInvite(sendDraft: (BetDraftMessage) -> Void) {
+        guard let conversation else {
+            errorMessage = "Initialize or join this conversation first."
+            return
+        }
+        guard let inviteURL = URL(string: "accountabilibuddy://conversation/\(conversation.id)") else {
+            errorMessage = RelayerClientError.invalidResponse.localizedDescription
+            return
+        }
+        sendDraft(BetDraftMessage(
+            url: inviteURL,
+            title: "Join AccountabiliBuddy conversation",
+            subtitle: "@\(conversation.ownerUsername) initialized this conversation. Open to join.",
+            wallet: nil,
+            solBalance: nil
+        ))
+        infoMessage = "Invite card ready to send again."
+    }
+
     func refreshConversation(showErrors: Bool = true) async {
         guard let id = conversation?.id else { return }
         do {
