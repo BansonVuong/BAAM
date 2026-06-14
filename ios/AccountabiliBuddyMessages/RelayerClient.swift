@@ -98,6 +98,49 @@ final class RelayerClient {
         return response.participants
     }
 
+    func createConversation() async throws -> MessageConversationCreateResponse {
+        struct EmptyBody: Codable {}
+        return try await requestJSON(
+            method: "POST",
+            path: "/imessage/conversations",
+            body: EmptyBody(),
+            responseType: MessageConversationCreateResponse.self
+        )
+    }
+
+    func fetchConversation(id: String) async throws -> MessageConversation {
+        let encoded = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        let response: MessageConversationResponse = try await requestJSON(
+            method: "GET",
+            path: "/imessage/conversations/\(encoded)",
+            body: Optional<String>.none,
+            responseType: MessageConversationResponse.self
+        )
+        return response.conversation
+    }
+
+    func joinConversation(id: String) async throws -> MessageConversation {
+        struct EmptyBody: Codable {}
+        let encoded = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        let response: MessageConversationResponse = try await requestJSON(
+            method: "POST",
+            path: "/imessage/conversations/\(encoded)/join",
+            body: EmptyBody(),
+            responseType: MessageConversationResponse.self
+        )
+        return response.conversation
+    }
+
+    func fetchScoreboard(sport: MessageSportKind) async throws -> [MessageScoreboardGame] {
+        let response: MessageScoreboardResponse = try await requestJSON(
+            method: "GET",
+            path: "/scoreboard?sport=\(sport.rawValue)",
+            body: Optional<String>.none,
+            responseType: MessageScoreboardResponse.self
+        )
+        return response.games
+    }
+
     func createBet(_ request: MessageCreateBetRequest) async throws -> MessageCreateBetResponse {
         try await requestJSON(
             method: "POST",

@@ -50,6 +50,8 @@ export interface BetDoc {
   id: string;
   /** Surface that created the bet. iMessage bets use the Messages conversation instead of a dashboard group. */
   source?: "imessage";
+  /** AccountabiliBuddy-managed Messages conversation used for invite membership. */
+  imessageConversationId?: string;
   /** Group that owns this bet. Older records may only be linked through a message. */
   groupId?: string;
   type: "PERSONAL" | "DEV";
@@ -165,6 +167,16 @@ export interface UserDoc {
   imessageParticipantIds?: string[];
 }
 
+export interface IMessageConversationDoc {
+  id: string;
+  ownerUserId: string;
+  ownerUsername: string;
+  memberUserIds: string[];
+  memberUsernames: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
 // ── lazy singleton connection ──────────────────────────────────────────────────
 
 let clientPromise: Promise<Db> | null = null;
@@ -221,6 +233,10 @@ export async function users(): Promise<Collection<UserDoc> | null> {
   const db = await getDb();
   return db ? db.collection<UserDoc>("users") : null;
 }
+export async function imessageConversations(): Promise<Collection<IMessageConversationDoc> | null> {
+  const db = await getDb();
+  return db ? db.collection<IMessageConversationDoc>("imessageConversations") : null;
+}
 export async function profiles(): Promise<Collection<ProfileDoc> | null> {
   const db = await getDb();
   return db ? db.collection<ProfileDoc>("profiles") : null;
@@ -236,10 +252,13 @@ async function ensureIndexes(db: Db): Promise<void> {
   await db.collection("groups").createIndex({ memberUsernames: 1 });
   await db.collection("bets").createIndex({ id: 1 }, { unique: true });
   await db.collection("bets").createIndex({ groupId: 1 });
+  await db.collection("bets").createIndex({ imessageConversationId: 1 });
   await db.collection("players").createIndex({ github: 1 }, { unique: true });
   await db.collection("users").createIndex({ emailLower: 1 }, { unique: true });
   await db.collection("users").createIndex({ usernameLower: 1 }, { unique: true });
   await db.collection("users").createIndex({ imessageParticipantIds: 1 }, { unique: true, sparse: true });
+  await db.collection("imessageConversations").createIndex({ id: 1 }, { unique: true });
+  await db.collection("imessageConversations").createIndex({ memberUserIds: 1 });
   await db.collection("profiles").createIndex({ id: 1 }, { unique: true });
   await db.collection("profiles").createIndex({ github: 1 }, { unique: true });
 }

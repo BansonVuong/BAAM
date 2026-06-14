@@ -14,8 +14,56 @@ enum MessageBetVoteChoice: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// Leagues offered by the sports board, mirroring the web dashboard's SportsView.
+enum MessageSportKind: String, Codable, CaseIterable, Identifiable {
+    case nba
+    case nfl
+    case nhl
+    case soccer
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .nba: return "NBA"
+        case .nfl: return "NFL"
+        case .nhl: return "NHL"
+        case .soccer: return "Soccer"
+        }
+    }
+}
+
+/// One upcoming game returned by the relayer's `/scoreboard` feed.
+struct MessageScoreboardGame: Codable, Identifiable, Equatable {
+    let gameId: String
+    let homeTeam: String
+    let awayTeam: String
+    let status: String
+    let isFinal: Bool
+    let startTime: String?
+    let startTimeMs: Double?
+
+    var id: String { gameId }
+
+    /// Human-readable kickoff for the picker row; falls back to the raw status.
+    var kickoffLabel: String {
+        if let startTimeMs {
+            let date = Date(timeIntervalSince1970: startTimeMs / 1000)
+            return date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+        }
+        return status.isEmpty ? "Scheduled" : status
+    }
+}
+
+struct MessageScoreboardResponse: Codable {
+    let sport: String
+    let league: String?
+    let games: [MessageScoreboardGame]
+}
+
 struct MessageCreateBetRequest: Codable {
     let source: String
+    let imessageConversationId: String
     let type: MessageBetType
     let acceptor: String
     let terms: String
@@ -26,6 +74,24 @@ struct MessageCreateBetRequest: Codable {
     let backsHome: Bool?
     let homeTeam: String?
     let awayTeam: String?
+}
+
+struct MessageConversation: Codable, Identifiable {
+    let id: String
+    let ownerUsername: String
+    let members: [String]
+    let joined: Bool
+    let isOwner: Bool
+    let createdAt: Double
+}
+
+struct MessageConversationResponse: Codable {
+    let conversation: MessageConversation
+}
+
+struct MessageConversationCreateResponse: Codable {
+    let conversation: MessageConversation
+    let inviteUrl: String
 }
 
 struct MessageCreateBetResponse: Codable {

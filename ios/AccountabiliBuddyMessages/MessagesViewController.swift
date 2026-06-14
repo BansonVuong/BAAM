@@ -79,7 +79,7 @@ final class MessagesViewController: MSMessagesAppViewController {
                     self.viewModel.errorMessage = "Failed to insert iMessage: \(error.localizedDescription)"
                     return
                 }
-                self.viewModel.infoMessage = "Bet card inserted into the conversation."
+                self.viewModel.infoMessage = "Card inserted into the conversation."
             }
         }
     }

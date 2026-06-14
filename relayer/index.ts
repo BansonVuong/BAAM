@@ -26,7 +26,7 @@ import { AnchorProvider, BN, Program, Wallet, web3 } from "@anchor-lang/core";
 
 import { fetchGameResult, fetchScoreboard, type Sport } from "./scraper";
 import {
-  isDbConfigured, groups, messages, bets, players, profiles, users, type GroupDoc, type MessageDoc, type ProfileDoc, type UserDoc, type BetDoc,
+  isDbConfigured, groups, messages, bets, players, profiles, users, imessageConversations, type GroupDoc, type MessageDoc, type ProfileDoc, type UserDoc, type BetDoc, type IMessageConversationDoc,
 } from "./db";
 import idl from "./generated/accountability.json";
 import type { Accountability } from "./generated/accountability";
@@ -386,6 +386,10 @@ function buildIMessageBetDeepLink(betId: string): string {
     ? IMESSAGE_DEEP_LINK_BASE.slice(0, -1)
     : IMESSAGE_DEEP_LINK_BASE;
   return `${base}/${encodeURIComponent(betId)}`;
+}
+
+function buildIMessageConversationDeepLink(conversationId: string): string {
+  return `accountabilibuddy://conversation/${encodeURIComponent(conversationId)}`;
 }
 
 // Decode a [u8; 32] zero-padded game id back into a string.
@@ -791,6 +795,63 @@ const server = http.createServer(async (req, res) => {
       return json(res, 400, { error: "provide either betId or url query param" });
     }
 
+    // AccountabiliBuddy conversation tokens provide shared membership that
+    // Messages.framework intentionally does not expose.
+    if (req.method === "POST" && req.url === "/imessage/conversations") {
+      const authUser = await getAuthenticatedUser(req);
+      if (!authUser) return json(res, 401, { error: "unauthorized" });
+      const col = await imessageConversations();
+      if (!col) return dbUnconfigured(res);
+
+      const now = Date.now();
+      const conversation: IMessageConversationDoc = {
+        id: `imc-${crypto.randomBytes(18).toString("base64url")}`,
+        ownerUserId: authUser.id,
+        ownerUsername: authUser.username,
+        memberUserIds: [authUser.id],
+        memberUsernames: [authUser.username],
+        createdAt: now,
+        updatedAt: now,
+      };
+      await col.insertOne(conversation);
+      return json(res, 201, {
+        conversation: toIMessageConversation(authUser, conversation),
+        inviteUrl: buildIMessageConversationDeepLink(conversation.id),
+      });
+    }
+
+    const imessageConversationPath = req.url ? decodeIMessageConversationPath(req.url) : null;
+    if (imessageConversationPath && req.method === "GET" && !imessageConversationPath.join) {
+      const authUser = await getAuthenticatedUser(req);
+      if (!authUser) return json(res, 401, { error: "unauthorized" });
+      const col = await imessageConversations();
+      if (!col) return dbUnconfigured(res);
+      const conversation = await col.findOne({ id: imessageConversationPath.id });
+      if (!conversation) return json(res, 404, { error: "conversation invite not found" });
+      return json(res, 200, { conversation: toIMessageConversation(authUser, conversation) });
+    }
+
+    if (imessageConversationPath?.join && req.method === "POST") {
+      const authUser = await getAuthenticatedUser(req);
+      if (!authUser) return json(res, 401, { error: "unauthorized" });
+      const col = await imessageConversations();
+      if (!col) return dbUnconfigured(res);
+      const now = Date.now();
+      const result = await col.findOneAndUpdate(
+        { id: imessageConversationPath.id },
+        {
+          $addToSet: {
+            memberUserIds: authUser.id,
+            memberUsernames: authUser.username,
+          },
+          $set: { updatedAt: now },
+        },
+        { returnDocument: "after" },
+      );
+      if (!result) return json(res, 404, { error: "conversation invite not found" });
+      return json(res, 200, { conversation: toIMessageConversation(authUser, result) });
+    }
+
     // POST /imessage/participants/link { participantId }
     // Links the current account to the opaque identifier supplied by Messages.framework.
     if (req.method === "POST" && req.url === "/imessage/participants/link") {
@@ -1037,6 +1098,9 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const groupId = typeof body.groupId === "string" ? body.groupId.trim() : "";
       const isIMessage = body.source === "imessage";
+      const imessageConversationId = typeof body.imessageConversationId === "string"
+        ? body.imessageConversationId.trim()
+        : "";
       const type = body.type === "PERSONAL" || body.type === "DEV" ? body.type : null;
       const challenger = authUser.username;
       const acceptorInput = typeof body.acceptor === "string" ? body.acceptor.trim() : "";
@@ -1060,10 +1124,28 @@ const server = http.createServer(async (req, res) => {
       if (type === "DEV" && !isSports) {
         return json(res, 400, { error: "DEV bets are sports bets now; include sport and gameId" });
       }
-      const acceptor = type === "DEV" ? (acceptorInput || "anyone") : acceptorInput;
+      let acceptor = type === "DEV" ? (acceptorInput || "anyone") : acceptorInput;
       if (!acceptor) return json(res, 400, { error: "acceptor is required" });
       if (acceptorInput && acceptorInput.toLowerCase() === challenger.toLowerCase()) {
         return json(res, 400, { error: "you cannot challenge yourself" });
+      }
+      if (isIMessage) {
+        if (!imessageConversationId) {
+          return json(res, 400, { error: "initialize or join this conversation before creating a bet" });
+        }
+        const conversationsCol = await imessageConversations();
+        if (!conversationsCol) return dbUnconfigured(res);
+        const conversation = await conversationsCol.findOne({ id: imessageConversationId });
+        if (!conversation || !conversation.memberUserIds.includes(authUser.id)) {
+          return json(res, 403, { error: "join this conversation before creating a bet" });
+        }
+        const canonicalAcceptor = conversation.memberUsernames.find(
+          (username) => username.toLowerCase() === acceptorInput.toLowerCase(),
+        );
+        if (!canonicalAcceptor) {
+          return json(res, 400, { error: "recipient has not joined this conversation" });
+        }
+        acceptor = canonicalAcceptor;
       }
       if (!isSports && terms.length < 8) return json(res, 400, { error: "terms must be at least 8 characters" });
       const numericStake = Number(stakeInput);
@@ -1198,6 +1280,7 @@ const server = http.createServer(async (req, res) => {
       const betDoc: BetDoc = {
         id: `bet-${now}-${crypto.randomBytes(3).toString("hex")}`,
         ...(isIMessage ? { source: "imessage" as const } : { groupId }),
+        ...(isIMessage ? { imessageConversationId } : {}),
         type,
         challenger,
         acceptor,
@@ -1814,6 +1897,17 @@ function normalizeIMessageParticipantId(value: unknown): string | null {
   return /^[a-z0-9-]+$/.test(participantId) ? participantId : null;
 }
 
+function toIMessageConversation(authUser: UserDoc, conversation: IMessageConversationDoc): Record<string, unknown> {
+  return {
+    id: conversation.id,
+    ownerUsername: conversation.ownerUsername,
+    members: conversation.memberUsernames,
+    joined: conversation.memberUserIds.includes(authUser.id),
+    isOwner: conversation.ownerUserId === authUser.id,
+    createdAt: conversation.createdAt,
+  };
+}
+
 function toPublicUser(user: UserDoc): {
   id: string;
   email: string;
@@ -2055,6 +2149,13 @@ function decodeIMessageBetPathId(url: string): string | null {
   const match = /^\/imessage\/bets\/([^/]+)$/.exec(path);
   if (!match?.[1]) return null;
   return decodeURIComponent(match[1]);
+}
+
+function decodeIMessageConversationPath(url: string): { id: string; join: boolean } | null {
+  const path = url.split("?")[0] ?? "";
+  const match = /^\/imessage\/conversations\/([^/]+)(\/join)?$/.exec(path);
+  if (!match?.[1]) return null;
+  return { id: decodeURIComponent(match[1]), join: Boolean(match[2]) };
 }
 
 function decodeGroupMembersPathId(url: string): string | null {

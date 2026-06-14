@@ -9,7 +9,10 @@ struct BetMessageRootView: View {
             VStack(spacing: 12) {
                 if viewModel.isSignedIn {
                     accountCard
-                    composeCard
+                    conversationCard
+                    if viewModel.conversation != nil {
+                        composeCard
+                    }
                     selectedBetCard
                 } else {
                     authenticationCard
@@ -81,11 +84,6 @@ struct BetMessageRootView: View {
                     Text(viewModel.currentUser?.email ?? "")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    if viewModel.isMessagesIdentityLinked {
-                        Text("@\(viewModel.currentUser?.username ?? "") linked to this Messages identity")
-                            .font(.caption2)
-                            .foregroundStyle(.green)
-                    }
                 }
                 Spacer()
                 Button("Sign out") {
@@ -126,6 +124,65 @@ struct BetMessageRootView: View {
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 
+    private var conversationCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let invite = viewModel.pendingConversation {
+                Text("Conversation invite")
+                    .font(.headline)
+                Text("@\(invite.ownerUsername) invited you to join this AccountabiliBuddy conversation.")
+                    .font(.subheadline)
+                Button {
+                    Task { await viewModel.joinPendingConversation() }
+                } label: {
+                    Label("Join conversation", systemImage: "person.badge.plus")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(viewModel.isBusy)
+            } else if let conversation = viewModel.conversation {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Conversation initialized")
+                            .font(.headline)
+                        Text("\(conversation.members.count) joined member\(conversation.members.count == 1 ? "" : "s")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        Task { await viewModel.refreshConversation() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Text(conversation.members.map { "@\($0)" }.joined(separator: ", "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("This conversation hasn’t been initialized")
+                    .font(.headline)
+                Text("Send an invite card so other people can join and become available for direct challenges.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button {
+                    Task {
+                        await viewModel.initializeConversation { draft in
+                            onSendDraft(draft)
+                        }
+                    }
+                } label: {
+                    Label("Initialize + insert invite card", systemImage: "person.3.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(viewModel.isBusy)
+            }
+        }
+        .padding(12)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+
     private var composeCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Create bet message")
@@ -149,25 +206,13 @@ struct BetMessageRootView: View {
             .disabled(viewModel.recipientCandidates.isEmpty)
 
             Text(viewModel.recipientCandidates.isEmpty
-                 ? "No one has been found yet. Another person must open AccountabiliBuddy in this conversation and sign in on their own phone before you can create a bet."
-                 : "Choose another signed-in AccountabiliBuddy user from this conversation.")
+                 ? "No one else has joined yet. Ask someone to open the invite card and join."
+                 : "Choose a joined AccountabiliBuddy member from this conversation.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             if viewModel.betType == .DEV {
-                TextField("Sport (nba | nfl | soccer)", text: $viewModel.sport)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .textFieldStyle(.roundedBorder)
-                TextField("ESPN game ID", text: $viewModel.gameId)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .textFieldStyle(.roundedBorder)
-                TextField("Home team (optional)", text: $viewModel.homeTeam)
-                    .textFieldStyle(.roundedBorder)
-                TextField("Away team (optional)", text: $viewModel.awayTeam)
-                    .textFieldStyle(.roundedBorder)
-                Toggle("Challenger backs home", isOn: $viewModel.backsHome)
+                sportsBoard
             } else {
                 TextEditor(text: $viewModel.terms)
                     .frame(minHeight: 78)
@@ -193,10 +238,155 @@ struct BetMessageRootView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(viewModel.isBusy || viewModel.recipientCandidates.isEmpty)
+            .disabled(
+                viewModel.isBusy
+                || viewModel.recipientCandidates.isEmpty
+                || (viewModel.betType == .DEV && viewModel.selectedGame == nil)
+            )
         }
         .padding(12)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .task(id: viewModel.betType) {
+            if viewModel.betType == .DEV {
+                await viewModel.ensureScoreboardLoaded()
+            }
+        }
+    }
+
+    private var sportsBoard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Sports board")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if viewModel.gamesLoading {
+                    ProgressView()
+                }
+                Button {
+                    Task { await viewModel.loadScoreboard() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .disabled(viewModel.gamesLoading)
+            }
+
+            Picker("Sport", selection: $viewModel.sport) {
+                ForEach(MessageSportKind.allCases) { kind in
+                    Text(kind.label).tag(kind)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: viewModel.sport) { _ in
+                Task { await viewModel.handleSportChange() }
+            }
+
+            Text("Pick a game")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            gameList
+
+            if let game = viewModel.selectedGame {
+                sidePicker(for: game)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var gameList: some View {
+        if viewModel.gamesLoading && viewModel.games.isEmpty {
+            Text("Loading \(viewModel.sport.label) games…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 8)
+        } else if let error = viewModel.gamesError {
+            Text(error)
+                .font(.caption)
+                .foregroundStyle(.red)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 8)
+        } else if viewModel.games.isEmpty {
+            Text("No \(viewModel.sport.label) games open for betting right now.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 8)
+        } else {
+            VStack(spacing: 6) {
+                ForEach(viewModel.games) { game in
+                    gameRow(game)
+                }
+            }
+        }
+    }
+
+    private func gameRow(_ game: MessageScoreboardGame) -> some View {
+        let selected = viewModel.selectedGame?.gameId == game.gameId
+        return Button {
+            viewModel.selectGame(game)
+        } label: {
+            HStack {
+                Text("\(game.awayTeam) @ \(game.homeTeam)")
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Spacer()
+                Text(game.kickoffLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+            .background(
+                (selected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.08)),
+                in: RoundedRectangle(cornerRadius: 8)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(selected ? Color.accentColor : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func sidePicker(for game: MessageScoreboardGame) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Back which side?")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                sideButton(label: "AWAY", team: game.awayTeam, isHome: false)
+                sideButton(label: "HOME", team: game.homeTeam, isHome: true)
+            }
+        }
+    }
+
+    private func sideButton(label: String, team: String, isHome: Bool) -> some View {
+        let selected = viewModel.backsHome == isHome
+        return Button {
+            viewModel.backsHome = isHome
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(team)
+                    .font(.caption.weight(.bold))
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+            .background(
+                (selected ? Color.green.opacity(0.18) : Color.secondary.opacity(0.08)),
+                in: RoundedRectangle(cornerRadius: 8)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(selected ? Color.green : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder

@@ -23,13 +23,17 @@ final class BetMessageViewModel: ObservableObject {
     @Published var stake: String = ""
     @Published var recipientUsername: String = ""
     @Published var recipientCandidates: [String] = []
-    @Published var isMessagesIdentityLinked: Bool = false
+    @Published var conversation: MessageConversation?
+    @Published var pendingConversation: MessageConversation?
 
-    @Published var sport: String = "nba"
-    @Published var gameId: String = ""
+    @Published var sport: MessageSportKind = .nba
     @Published var backsHome: Bool = true
-    @Published var homeTeam: String = ""
-    @Published var awayTeam: String = ""
+
+    @Published var games: [MessageScoreboardGame] = []
+    @Published var gamesLoading: Bool = false
+    @Published var gamesError: String?
+    @Published var selectedGame: MessageScoreboardGame?
+    private var scoreboardLoadedForSport: MessageSportKind?
 
     @Published var selectedBetId: String?
     @Published var selectedCard: MessageBetCard?
@@ -41,11 +45,12 @@ final class BetMessageViewModel: ObservableObject {
 
     private let defaults = UserDefaults.standard
     private let authTokenKey = "imessage.authToken"
+    private let conversationKeyPrefix = "imessage.conversation."
     private let productionURL = URL(string: "https://66.42.115.38.nip.io")!
     private var authToken: String
     private var hasBootstrapped = false
-    private var localParticipantId: String?
-    private var remoteParticipantIds: [String] = []
+    private var conversationFingerprint: String?
+    private var pendingConversationId: String?
     private let client: RelayerClient
 
     init() {
@@ -69,8 +74,7 @@ final class BetMessageViewModel: ObservableObject {
             isBusy = true
             currentUser = try await client.currentUser()
             try await refreshProfile()
-            await linkMessagesIdentity()
-            await refreshRecipientCandidates()
+            await refreshConversationState()
         } catch {
             signOut(showMessage: false)
         }
@@ -105,8 +109,7 @@ final class BetMessageViewModel: ObservableObject {
             defaults.set(response.token, forKey: authTokenKey)
             password = ""
             try await refreshProfile()
-            await linkMessagesIdentity()
-            await refreshRecipientCandidates()
+            await refreshConversationState()
             infoMessage = isCreatingAccount ? "Account created." : "Signed in."
         } catch {
             errorMessage = error.localizedDescription
@@ -126,7 +129,8 @@ final class BetMessageViewModel: ObservableObject {
         selectedCard = nil
         recipientUsername = ""
         recipientCandidates = []
-        isMessagesIdentityLinked = false
+        conversation = nil
+        pendingConversation = nil
         client.update(baseURL: productionURL, authToken: "")
         defaults.removeObject(forKey: authTokenKey)
         if showMessage {
@@ -135,18 +139,86 @@ final class BetMessageViewModel: ObservableObject {
     }
 
     func openFromIncomingURL(_ url: URL?) async {
+        if let conversationId = Self.conversationId(from: url) {
+            pendingConversationId = conversationId
+            await bootstrap()
+            guard isSignedIn else { return }
+            await loadPendingConversation(conversationId)
+            return
+        }
         guard let id = Self.betId(from: url) else { return }
         await bootstrap()
         await loadBetCard(id)
     }
 
     func updateConversationParticipants(local: String, remote: [String]) async {
-        localParticipantId = local.lowercased()
-        remoteParticipantIds = remote.map { $0.lowercased() }
+        conversationFingerprint = ([local] + remote)
+            .map { $0.lowercased() }
+            .sorted()
+            .joined(separator: ".")
         await bootstrap()
         guard isSignedIn else { return }
-        await linkMessagesIdentity()
-        await refreshRecipientCandidates()
+        await refreshConversationState()
+    }
+
+    func initializeConversation(sendDraft: (BetDraftMessage) -> Void) async {
+        do {
+            try requireSignedIn()
+            guard conversationFingerprint != nil else {
+                throw RelayerClientError.server("Open AccountabiliBuddy from an active Messages conversation.")
+            }
+            isBusy = true
+            errorMessage = nil
+            let created = try await client.createConversation()
+            guard let inviteURL = URL(string: created.inviteUrl) else {
+                throw RelayerClientError.invalidResponse
+            }
+            conversation = created.conversation
+            pendingConversation = nil
+            pendingConversationId = nil
+            persistConversationId(created.conversation.id)
+            refreshRecipientCandidates()
+            sendDraft(BetDraftMessage(
+                url: inviteURL,
+                title: "Join AccountabiliBuddy conversation",
+                subtitle: "@\(created.conversation.ownerUsername) initialized this conversation. Open to join.",
+                wallet: nil,
+                solBalance: nil
+            ))
+            infoMessage = "Invite card ready to send."
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isBusy = false
+    }
+
+    func joinPendingConversation() async {
+        guard let pendingConversationId else { return }
+        do {
+            try requireSignedIn()
+            isBusy = true
+            errorMessage = nil
+            let joined = try await client.joinConversation(id: pendingConversationId)
+            conversation = joined
+            pendingConversation = nil
+            self.pendingConversationId = nil
+            persistConversationId(joined.id)
+            refreshRecipientCandidates()
+            infoMessage = "Joined this AccountabiliBuddy conversation."
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isBusy = false
+    }
+
+    func refreshConversation() async {
+        guard let id = conversation?.id else { return }
+        do {
+            conversation = try await client.fetchConversation(id: id)
+            refreshRecipientCandidates()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     func loadBetCard(_ betId: String) async {
@@ -161,6 +233,44 @@ final class BetMessageViewModel: ObservableObject {
             errorMessage = error.localizedDescription
         }
         isBusy = false
+    }
+
+    /// Loads the scoreboard for the current sport once; safe to call repeatedly.
+    func ensureScoreboardLoaded() async {
+        guard scoreboardLoadedForSport != sport || (games.isEmpty && gamesError == nil) else { return }
+        await loadScoreboard()
+    }
+
+    /// Called after the sport picker mutates `sport`; resets the selection and reloads.
+    func handleSportChange() async {
+        selectedGame = nil
+        backsHome = true
+        await loadScoreboard()
+    }
+
+    func loadScoreboard() async {
+        do {
+            gamesLoading = true
+            gamesError = nil
+            let fetched = try await client.fetchScoreboard(sport: sport)
+            games = fetched
+            if let current = selectedGame, !fetched.contains(where: { $0.gameId == current.gameId }) {
+                selectedGame = nil
+            }
+            scoreboardLoadedForSport = sport
+        } catch {
+            games = []
+            selectedGame = nil
+            gamesError = error.localizedDescription
+        }
+        gamesLoading = false
+    }
+
+    func selectGame(_ game: MessageScoreboardGame) {
+        selectedGame = game
+        backsHome = true
+        errorMessage = nil
+        infoMessage = nil
     }
 
     func createBetAndDraftMessage(sendDraft: (BetDraftMessage) -> Void) async {
@@ -229,41 +339,25 @@ final class BetMessageViewModel: ObservableObject {
         }
     }
 
-    func refreshRecipientCandidates() async {
-        guard currentUser != nil, !remoteParticipantIds.isEmpty else {
+    private func refreshRecipientCandidates() {
+        guard let currentUser, let conversation, conversation.joined else {
             recipientCandidates = []
             recipientUsername = ""
             return
         }
-        do {
-            let resolved = try await client.resolveParticipants(remoteParticipantIds)
-            let currentUsername = currentUser?.username ?? ""
-            let candidates = Array(Set(resolved.map(\.username).filter {
-                $0.caseInsensitiveCompare(currentUsername) != .orderedSame
-            }))
-                .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-            recipientCandidates = candidates
-            recipientUsername = candidates.first(where: {
-                $0.caseInsensitiveCompare(recipientUsername) == .orderedSame
-            }) ?? candidates.first ?? ""
-        } catch {
-            recipientCandidates = []
-            recipientUsername = ""
-        }
-    }
-
-    private func linkMessagesIdentity() async {
-        guard let localParticipantId, isSignedIn else { return }
-        do {
-            try await client.linkParticipant(localParticipantId)
-            isMessagesIdentityLinked = true
-        } catch {
-            isMessagesIdentityLinked = false
-            errorMessage = error.localizedDescription
-        }
+        let candidates = conversation.members.filter {
+            $0.caseInsensitiveCompare(currentUser.username) != .orderedSame
+        }.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        recipientCandidates = candidates
+        recipientUsername = candidates.first(where: {
+            $0.caseInsensitiveCompare(recipientUsername) == .orderedSame
+        }) ?? candidates.first ?? ""
     }
 
     private func buildCreateBetRequest() throws -> MessageCreateBetRequest {
+        guard let conversation, conversation.joined else {
+            throw RelayerClientError.server("Initialize or join this conversation first.")
+        }
         let trimmedStake = stake.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let numericStake = Double(trimmedStake), numericStake > 0 else {
             throw RelayerClientError.server("Stake must be a positive SOL amount.")
@@ -272,16 +366,20 @@ final class BetMessageViewModel: ObservableObject {
         guard let normalizedAcceptor = recipientCandidates.first(where: {
             $0.caseInsensitiveCompare(selectedRecipient) == .orderedSame
         }) else {
-            throw RelayerClientError.server("Choose a resolved participant from this conversation.")
+            throw RelayerClientError.server("Choose a joined member from this conversation.")
         }
 
+        let sportsMode = betType == .DEV
+        let selectedGame = sportsMode ? self.selectedGame : nil
+
         let normalizedTerms: String
-        if betType == .DEV {
-            let trimmedGameID = gameId.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmedGameID.isEmpty {
-                throw RelayerClientError.server("Sports game ID is required.")
+        if sportsMode {
+            guard let game = selectedGame else {
+                throw RelayerClientError.server("Pick a game from the board first.")
             }
-            normalizedTerms = "Sports bet for \(sport.uppercased()) game \(trimmedGameID)."
+            let backedTeam = backsHome ? game.homeTeam : game.awayTeam
+            let challenger = currentUser?.username ?? "challenger"
+            normalizedTerms = "\(sport.label): \(game.awayTeam) @ \(game.homeTeam) — \(challenger) backs \(backedTeam)."
         } else {
             let trimmedTerms = terms.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmedTerms.count < 8 {
@@ -290,20 +388,19 @@ final class BetMessageViewModel: ObservableObject {
             normalizedTerms = trimmedTerms
         }
 
-        let sportsMode = betType == .DEV
-
         return MessageCreateBetRequest(
             source: "imessage",
+            imessageConversationId: conversation.id,
             type: betType,
             acceptor: normalizedAcceptor,
             terms: normalizedTerms,
             stake: trimmedStake,
             currency: "SOL",
-            sport: sportsMode ? sport.lowercased() : nil,
-            gameId: sportsMode ? gameId.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
+            sport: sportsMode ? sport.rawValue : nil,
+            gameId: selectedGame?.gameId,
             backsHome: sportsMode ? backsHome : nil,
-            homeTeam: sportsMode ? optionalTrimmed(homeTeam) : nil,
-            awayTeam: sportsMode ? optionalTrimmed(awayTeam) : nil
+            homeTeam: selectedGame?.homeTeam,
+            awayTeam: selectedGame?.awayTeam
         )
     }
 
@@ -311,11 +408,8 @@ final class BetMessageViewModel: ObservableObject {
         terms = ""
         stake = ""
         recipientUsername = recipientCandidates.first ?? ""
-        sport = "nba"
-        gameId = ""
         backsHome = true
-        homeTeam = ""
-        awayTeam = ""
+        selectedGame = nil
     }
 
     private static func betId(from url: URL?) -> String? {
@@ -339,8 +433,54 @@ final class BetMessageViewModel: ObservableObject {
         return nil
     }
 
-    private func optionalTrimmed(_ value: String) -> String? {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+    private static func conversationId(from url: URL?) -> String? {
+        guard let url, url.scheme == "accountabilibuddy", url.host == "conversation" else { return nil }
+        return url.pathComponents.filter { $0 != "/" }.first
+    }
+
+    private func refreshConversationState() async {
+        if let pendingConversationId {
+            await loadPendingConversation(pendingConversationId)
+        }
+        guard let fingerprint = conversationFingerprint,
+              let savedId = defaults.string(forKey: conversationKeyPrefix + fingerprint) else {
+            conversation = nil
+            refreshRecipientCandidates()
+            return
+        }
+        do {
+            let savedConversation = try await client.fetchConversation(id: savedId)
+            if savedConversation.joined {
+                conversation = savedConversation
+            } else {
+                defaults.removeObject(forKey: conversationKeyPrefix + fingerprint)
+                conversation = nil
+            }
+        } catch {
+            conversation = nil
+        }
+        refreshRecipientCandidates()
+    }
+
+    private func loadPendingConversation(_ id: String) async {
+        do {
+            let invite = try await client.fetchConversation(id: id)
+            if invite.joined {
+                conversation = invite
+                pendingConversation = nil
+                pendingConversationId = nil
+                persistConversationId(invite.id)
+                refreshRecipientCandidates()
+            } else {
+                pendingConversation = invite
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func persistConversationId(_ id: String) {
+        guard let conversationFingerprint else { return }
+        defaults.set(id, forKey: conversationKeyPrefix + conversationFingerprint)
     }
 }
