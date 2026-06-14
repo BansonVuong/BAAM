@@ -25,6 +25,13 @@ struct BetMessageRootView: View {
         .task {
             await viewModel.bootstrap()
         }
+        .task(id: viewModel.conversation?.id) {
+            guard viewModel.conversation != nil else { return }
+            while !Task.isCancelled {
+                await viewModel.refreshConversation(showErrors: false)
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
     }
 
     private var authenticationCard: some View {

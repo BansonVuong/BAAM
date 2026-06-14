@@ -211,13 +211,15 @@ final class BetMessageViewModel: ObservableObject {
         isBusy = false
     }
 
-    func refreshConversation() async {
+    func refreshConversation(showErrors: Bool = true) async {
         guard let id = conversation?.id else { return }
         do {
             conversation = try await client.fetchConversation(id: id)
             refreshRecipientCandidates()
         } catch {
-            errorMessage = error.localizedDescription
+            if showErrors {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -439,8 +441,12 @@ final class BetMessageViewModel: ObservableObject {
     }
 
     private func refreshConversationState() async {
-        if let pendingConversationId {
-            await loadPendingConversation(pendingConversationId)
+        if let requestedConversationId = pendingConversationId {
+            await loadPendingConversation(requestedConversationId)
+            if pendingConversation?.id == requestedConversationId || conversation?.id == requestedConversationId {
+                refreshRecipientCandidates()
+                return
+            }
         }
         guard let fingerprint = conversationFingerprint,
               let savedId = defaults.string(forKey: conversationKeyPrefix + fingerprint) else {
