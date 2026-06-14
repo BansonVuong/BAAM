@@ -278,6 +278,7 @@ export interface Bet {
   id: string;
   createdAt?: number;
   source?: "imessage" | "discord";
+  discordConversationId?: string;
   groupId?: string;
   type: "PERSONAL" | "DEV";
   challenger: string;
@@ -432,9 +433,20 @@ export function explorerTxUrl(signature: string): string {
   return `https://explorer.solana.com/tx/${signature}?cluster=devnet`;
 }
 
-/** Players ranked by SOL balance. */
-export function getLeaderboard(): Promise<{ players: Player[] }> {
-  return req("/leaderboard");
+export interface DiscordLeaderboardServer {
+  id: string;
+  name: string;
+  memberUsernames: string[];
+}
+
+/** Players ranked from Mongo bet history, optionally scoped to one Discord server. */
+export function getLeaderboard(discordGuildId?: string): Promise<{
+  players: Player[];
+  discordServers: DiscordLeaderboardServer[];
+  bets?: Bet[];
+}> {
+  const query = discordGuildId ? `?discordGuildId=${encodeURIComponent(discordGuildId)}` : "";
+  return req(`/leaderboard${query}`);
 }
 
 /** All user profiles (Mongo-backed). */

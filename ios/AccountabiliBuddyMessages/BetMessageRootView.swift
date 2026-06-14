@@ -484,6 +484,8 @@ struct BetMessageRootView: View {
                         .multilineTextAlignment(.trailing)
                 }
 
+                onChainLinks(for: card)
+
                 votingSection(for: card)
 
                 HStack {
@@ -522,6 +524,44 @@ struct BetMessageRootView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(8)
         .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Solana Explorer links for whichever on-chain steps have settled. Tapping a
+    /// row opens the transaction on explorer.solana.com (devnet).
+    @ViewBuilder
+    private func onChainLinks(for card: MessageBetCard) -> some View {
+        let candidates: [(label: String, url: String?)] = [
+            ("Stake escrowed", card.onChain.explorer.create),
+            ("Opponent staked", card.onChain.explorer.accept),
+            ("Settled on-chain", card.onChain.explorer.settle),
+        ]
+        let links: [(String, String)] = candidates.compactMap { candidate in
+            guard let url = candidate.url, !url.isEmpty else { return nil }
+            return (candidate.label, url)
+        }
+
+        if !links.isEmpty {
+            Divider()
+            VStack(alignment: .leading, spacing: 6) {
+                Text("On-chain")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(links, id: \.0) { label, url in
+                    if let destination = URL(string: url) {
+                        Link(destination: destination) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "link")
+                                Text(label)
+                                Spacer()
+                                Image(systemName: "arrow.up.right.square")
+                            }
+                            .font(.caption.weight(.medium))
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     @ViewBuilder

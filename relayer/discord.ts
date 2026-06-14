@@ -383,7 +383,7 @@ async function handleBetCommand(interaction: ChatInputCommandInteraction): Promi
 
     await interaction.deferReply({ ephemeral: true });
 
-    const conv = await getOrCreateDiscordConversation(interaction.channelId, interaction.guildId, user);
+    const conv = await getOrCreateDiscordConversation(interaction.channelId, interaction.guildId, interaction.guild?.name, user);
     const betsCol = await bets();
     if (!betsCol) {
       await interaction.editReply("Database not available.");
@@ -620,7 +620,7 @@ async function handleSportsBetModal(interaction: ModalSubmitInteraction): Promis
 
   // The relayer's POST /bets requires the channel's conversation to already
   // exist with the creator as a member.
-  const conv = await getOrCreateDiscordConversation(interaction.channelId, interaction.guildId, user);
+  const conv = await getOrCreateDiscordConversation(interaction.channelId, interaction.guildId, interaction.guild?.name, user);
 
   let acceptorUsername = "anyone";
   if (selectedOpponentDiscordId !== "anyone") {
@@ -911,7 +911,7 @@ async function handleBetCreateModal(interaction: ModalSubmitInteraction): Promis
   }
 
   // Get or create the Discord conversation for this channel
-  const conv = await getOrCreateDiscordConversation(interaction.channelId, interaction.guildId, user);
+  const conv = await getOrCreateDiscordConversation(interaction.channelId, interaction.guildId, interaction.guild?.name, user);
 
   const betsCol = await bets();
   if (!betsCol) {
@@ -1147,6 +1147,8 @@ function buildBetEmbed(bet: BetDoc, viewerUsername: string): EmbedBuilder {
     });
   }
 
+  addChainLinksField(embed, bet);
+
   return embed;
 }
 
@@ -1205,7 +1207,26 @@ function buildSportsBetEmbed(bet: BetDoc): EmbedBuilder {
     embed.addFields({ name: "Kickoff", value: `<t:${bet.startTime}:F> (<t:${bet.startTime}:R>)` });
   }
 
+  addChainLinksField(embed, bet);
+
   return embed;
+}
+
+// ── on-chain explorer links ───────────────────────────────────────────────────
+// Solana Explorer (devnet) link for a transaction signature.
+function explorerTxUrl(sig: string): string {
+  return `https://explorer.solana.com/tx/${sig}?cluster=devnet`;
+}
+
+// Appends a final embed field with Solana Explorer links for whichever on-chain
+// steps have happened, so members can verify the escrow / settlement on-chain.
+function addChainLinksField(embed: EmbedBuilder, bet: BetDoc): void {
+  const links: string[] = [];
+  if (bet.createSig) links.push(`[Stake escrowed](${explorerTxUrl(bet.createSig)})`);
+  if (bet.acceptSig) links.push(`[Opponent staked](${explorerTxUrl(bet.acceptSig)})`);
+  if (bet.settleSig) links.push(`[Settled on-chain](${explorerTxUrl(bet.settleSig)})`);
+  if (!links.length) return;
+  embed.addFields({ name: "🔗 On-chain", value: links.join(" · ") });
 }
 
 function buildBetActionRows(bet: BetDoc, viewerUsername: string): ActionRowBuilder<ButtonBuilder>[] {
@@ -1264,6 +1285,7 @@ function buildBetActionRows(bet: BetDoc, viewerUsername: string): ActionRowBuild
 async function getOrCreateDiscordConversation(
   channelId: string,
   guildId: string | null | undefined,
+  guildName: string | undefined,
   owner: UserDoc,
 ): Promise<DiscordConversationDoc> {
   const col = await discordConversations();
@@ -1272,16 +1294,21 @@ async function getOrCreateDiscordConversation(
   const existing = await col.findOne({ channelId });
   if (existing) {
     // Add owner to members if not already there
-    if (!existing.memberUserIds.includes(owner.id)) {
+    if (!existing.memberUserIds.includes(owner.id) || (guildName && guildName !== existing.guildName)) {
       const now = Date.now();
       await col.updateOne(
         { channelId },
         {
           $addToSet: { memberUserIds: owner.id, memberUsernames: owner.username },
-          $set: { updatedAt: now },
+          $set: { updatedAt: now, ...(guildName ? { guildName } : {}) },
         },
       );
-      return { ...existing, memberUserIds: [...existing.memberUserIds, owner.id], memberUsernames: [...existing.memberUsernames, owner.username] };
+      return {
+        ...existing,
+        ...(guildName ? { guildName } : {}),
+        memberUserIds: existing.memberUserIds.includes(owner.id) ? existing.memberUserIds : [...existing.memberUserIds, owner.id],
+        memberUsernames: existing.memberUsernames.includes(owner.username) ? existing.memberUsernames : [...existing.memberUsernames, owner.username],
+      };
     }
     return existing;
   }
@@ -1291,6 +1318,7 @@ async function getOrCreateDiscordConversation(
     id: `dc-${crypto.randomBytes(9).toString("hex")}`,
     channelId,
     guildId: guildId ?? null,
+    ...(guildName ? { guildName } : {}),
     ownerUserId: owner.id,
     ownerUsername: owner.username,
     memberUserIds: [owner.id],

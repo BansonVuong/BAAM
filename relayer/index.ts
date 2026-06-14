@@ -1999,24 +1999,76 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { bet: normalizeBetDoc(updated) });
     }
 
-    // GET /leaderboard  — Mongo users ranked by SOL balance with stats derived
-    // from every persisted bet, including Discord and iMessage bets.
-    if (req.method === "GET" && req.url === "/leaderboard") {
-      const [usersCol, betsCol, profilesCol, playersCol] = await Promise.all([
+    // GET /leaderboard[?discordGuildId=...] — Mongo standings excluding iMessage.
+    // Discord standings are grouped across every bot channel in a server.
+    if (req.method === "GET" && req.url && /^\/leaderboard(?:\?|$)/.test(req.url)) {
+      const authUser = await getAuthenticatedUser(req);
+      if (!authUser) return json(res, 401, { error: "unauthorized" });
+      const [usersCol, betsCol, profilesCol, playersCol, discordConvCol] = await Promise.all([
         users(),
         bets(),
         profiles(),
         players(),
+        discordConversations(),
       ]);
-      if (!usersCol || !betsCol || !profilesCol || !playersCol) return dbUnconfigured(res);
-      const [userDocs, betDocs, profileDocs, legacyPlayers] = await Promise.all([
+      if (!usersCol || !betsCol || !profilesCol || !playersCol || !discordConvCol) return dbUnconfigured(res);
+      const [userDocs, discordBetDocs, webBetDocs, profileDocs, legacyPlayers, discordConversationDocs] = await Promise.all([
         usersCol.find({}, { projection: { _id: 0 } }).toArray(),
-        betsCol.find({}, { projection: { _id: 0 } }).toArray(),
+        betsCol.find({ source: "discord" }, { projection: { _id: 0 } }).toArray(),
+        betsCol.find({ source: { $exists: false } }, { projection: { _id: 0 } }).toArray(),
         profilesCol.find({}, { projection: { _id: 0 } }).toArray(),
         playersCol.find({}, { projection: { _id: 0 } }).toArray(),
+        discordConvCol.find({ guildId: { $type: "string" } }, { projection: { _id: 0 } }).toArray(),
       ]);
+      const conversationById = new Map(discordConversationDocs.map((conversation) => [conversation.id, conversation]));
+      const guildId = new URL(req.url, "http://x").searchParams.get("discordGuildId")?.trim() ?? "";
+      const isAuthParticipant = (bet: BetDoc): boolean => [
+        bet.challenger,
+        bet.acceptor,
+        bet.acceptedBy,
+        bet.opponentUsername,
+      ].some((username) => username?.toLowerCase() === authUser.usernameLower);
+      const visibleGuildIds = new Set<string>();
+      for (const conversation of discordConversationDocs) {
+        if (conversation.guildId && conversation.memberUserIds.includes(authUser.id)) {
+          visibleGuildIds.add(conversation.guildId);
+        }
+      }
+      for (const bet of discordBetDocs) {
+        const betGuildId = bet.discordConversationId
+          ? conversationById.get(bet.discordConversationId)?.guildId
+          : null;
+        if (betGuildId && isAuthParticipant(bet)) visibleGuildIds.add(betGuildId);
+      }
+      if (guildId && !visibleGuildIds.has(guildId)) {
+        return json(res, 403, { error: "Discord server leaderboard access required" });
+      }
+      const selectedDiscordBets = guildId
+        ? discordBetDocs.filter((bet) => (
+          bet.discordConversationId
+          && conversationById.get(bet.discordConversationId)?.guildId === guildId
+        ))
+        : discordBetDocs;
+      const leaderboardBets = guildId ? selectedDiscordBets : [...webBetDocs, ...discordBetDocs];
+      const discordServers = [...visibleGuildIds].map((visibleGuildId) => {
+        const conversations = discordConversationDocs.filter((conversation) => conversation.guildId === visibleGuildId);
+        const memberUsernames = new Set(conversations.flatMap((conversation) => conversation.memberUsernames));
+        for (const bet of discordBetDocs) {
+          if (!bet.discordConversationId || conversationById.get(bet.discordConversationId)?.guildId !== visibleGuildId) continue;
+          for (const username of [bet.challenger, bet.acceptor, bet.acceptedBy, bet.opponentUsername]) {
+            if (username && username.toLowerCase() !== "anyone") memberUsernames.add(username);
+          }
+        }
+        return {
+          id: visibleGuildId,
+          name: conversations.find((conversation) => conversation.guildName)?.guildName ?? `Discord server ${visibleGuildId}`,
+          memberUsernames: [...memberUsernames],
+        };
+      }).sort((a, b) => a.name.localeCompare(b.name));
       return json(res, 200, {
-        players: buildLeaderboardPlayers(userDocs, profileDocs, legacyPlayers, betDocs),
+        players: buildLeaderboardPlayers(userDocs, profileDocs, legacyPlayers, leaderboardBets),
+        discordServers,
+        ...(guildId ? { bets: selectedDiscordBets.map(normalizeBetDoc) } : {}),
       });
     }
 

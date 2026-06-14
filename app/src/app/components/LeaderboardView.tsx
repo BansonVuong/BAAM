@@ -333,6 +333,7 @@ function WinRateTrend({ points }: { points: number[] }) {
 
 /* ── Main view ─────────────────────────────────────────── */
 const ALL_BETS_GROUP_ID = "__all_bets__";
+const DISCORD_GROUP_PREFIX = "discord:";
 
 export function LeaderboardView({ currentUser = null }: { currentUser?: AuthUser | null }) {
   const [groups, setGroups] = useState<Group[]>([]);
@@ -349,23 +350,38 @@ export function LeaderboardView({ currentUser = null }: { currentUser?: AuthUser
     let alive = true;
 
     const load = async (): Promise<void> => {
+      const selectedDiscordGuildId = activeGroupId.startsWith(DISCORD_GROUP_PREFIX)
+        ? activeGroupId.slice(DISCORD_GROUP_PREFIX.length)
+        : undefined;
       const [groupsResult, leaderboardResult, betsResult] = await Promise.allSettled([
         getGroups(),
-        getLeaderboard(),
+        getLeaderboard(selectedDiscordGuildId),
         getBets(),
       ]);
       if (!alive) return;
 
       if (groupsResult.status === "fulfilled") {
+        const discordGroups: Group[] = leaderboardResult.status === "fulfilled"
+          ? leaderboardResult.value.discordServers.map((server) => ({
+            id: `${DISCORD_GROUP_PREFIX}${server.id}`,
+            name: server.name,
+            initials: "DC",
+            members: server.memberUsernames.length,
+            memberUsernames: server.memberUsernames,
+            pendingBet: false,
+            lastMsg: "Discord server bets",
+            time: "",
+          }))
+          : [];
         const nextGroups = [{
           id: ALL_BETS_GROUP_ID,
           name: "All bets",
           initials: "AB",
           members: 0,
           pendingBet: false,
-          lastMsg: "Discord, iMessage, and web bets",
+          lastMsg: "Discord and web bets",
           time: "",
-        }, ...groupsResult.value.groups];
+        }, ...discordGroups, ...groupsResult.value.groups];
         setGroups(nextGroups);
         setGroupsLive(true);
         setActiveGroupId((currentId) => (
@@ -380,7 +396,11 @@ export function LeaderboardView({ currentUser = null }: { currentUser?: AuthUser
       }
 
       if (betsResult.status === "fulfilled") {
-        setBets(betsResult.value.bets);
+        setBets(
+          selectedDiscordGuildId && leaderboardResult.status === "fulfilled"
+            ? leaderboardResult.value.bets ?? []
+            : betsResult.value.bets.filter((bet) => bet.source !== "imessage"),
+        );
       } else {
         setBets([]);
       }
@@ -423,14 +443,14 @@ export function LeaderboardView({ currentUser = null }: { currentUser?: AuthUser
       alive = false;
       clearInterval(interval);
     };
-  }, []);
+  }, [activeGroupId]);
 
   useEffect(() => {
     let alive = true;
 
-    if (!activeGroupId || activeGroupId === ALL_BETS_GROUP_ID) {
+    if (!activeGroupId || activeGroupId === ALL_BETS_GROUP_ID || activeGroupId.startsWith(DISCORD_GROUP_PREFIX)) {
       setHistoryMessages([]);
-      setHistoryLive(false);
+      setHistoryLive(Boolean(activeGroupId));
       return () => {
         alive = false;
       };
@@ -465,6 +485,7 @@ export function LeaderboardView({ currentUser = null }: { currentUser?: AuthUser
     [activeGroupId, groups],
   );
   const showingAllBets = activeGroupId === ALL_BETS_GROUP_ID;
+  const showingDiscordServer = activeGroupId.startsWith(DISCORD_GROUP_PREFIX);
   const currentUsername = currentUser?.username ?? "";
 
   const hasMembershipRoster = useMemo(
@@ -546,12 +567,12 @@ export function LeaderboardView({ currentUser = null }: { currentUser?: AuthUser
   );
 
   const historyBets = useMemo(() => {
-    if (showingAllBets) return bets;
+    if (showingAllBets || showingDiscordServer) return bets;
     const byMessage = bets.filter((bet) => historyBetIds.has(bet.id));
     if (byMessage.length) return byMessage;
     if (!activeGroup) return [];
     return bets.filter((bet) => bet.groupId === activeGroup.id);
-  }, [activeGroup, bets, historyBetIds, showingAllBets]);
+  }, [activeGroup, bets, historyBetIds, showingAllBets, showingDiscordServer]);
 
 
   const resolvedOutcomes = useMemo(
@@ -776,7 +797,7 @@ export function LeaderboardView({ currentUser = null }: { currentUser?: AuthUser
         </div>
       </div>
 
-      {activeGroup && !showingAllBets && !hasMembershipRoster && (
+      {activeGroup && !showingAllBets && !showingDiscordServer && !hasMembershipRoster && (
         <div className="px-5 py-2 border-b border-border" style={{ background: "var(--muted)" }}>
           <Mono className="text-muted-foreground" style={{ fontSize: "10px" } as React.CSSProperties}>
             Group membership roster is missing, so this view currently shows all available leaderboard profiles.
@@ -800,7 +821,7 @@ export function LeaderboardView({ currentUser = null }: { currentUser?: AuthUser
                     Bet history analytics
                   </p>
                   <p className="text-muted-foreground truncate" style={{ fontSize: "10px" }}>
-                    {resolvedOutcomes.length} resolved bets across {historyBetIds.size} bet cards
+                    {resolvedOutcomes.length} resolved bets across {historyBets.length} bet records
                   </p>
                 </div>
               </div>

@@ -177,6 +177,7 @@ export interface DiscordConversationDoc {
   id: string;
   channelId: string;
   guildId: string | null;
+  guildName?: string;
   ownerUserId: string;
   ownerUsername: string;
   memberUserIds: string[];
@@ -290,6 +291,7 @@ async function ensureIndexes(db: Db): Promise<void> {
   await db.collection("bets").createIndex({ source: 1, status: 1 });
   await db.collection("discordConversations").createIndex({ id: 1 }, { unique: true });
   await db.collection("discordConversations").createIndex({ channelId: 1 }, { unique: true });
+  await db.collection("discordConversations").createIndex({ guildId: 1 });
   await db.collection("discordConversations").createIndex({ memberUserIds: 1 });
   await db.collection("profiles").createIndex({ id: 1 }, { unique: true });
   await db.collection("profiles").createIndex({ github: 1 }, { unique: true });
