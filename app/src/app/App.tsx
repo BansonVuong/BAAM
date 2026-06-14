@@ -172,6 +172,16 @@ export default function App() {
     return () => { alive = false; };
   }, [authUser, discordLinkCode, discordLinkStatus]);
 
+  /* On a successful link, briefly show the confirmation, then send the user
+     straight back to Discord. */
+  useEffect(() => {
+    if (discordLinkStatus !== "done") return;
+    const url = discordLinkResult?.returnUrl;
+    if (!url || typeof window === "undefined") return;
+    const timer = window.setTimeout(() => { window.location.href = url; }, 1800);
+    return () => window.clearTimeout(timer);
+  }, [discordLinkStatus, discordLinkResult]);
+
   useEffect(() => {
     let alive = true;
     const token = typeof window === "undefined"
@@ -586,7 +596,9 @@ export default function App() {
           </p>
           <p className="text-muted-foreground mt-1.5" style={{ fontSize: "12px" }}>
             {linked
-              ? `Your account @${discordLinkResult?.username ?? authUser.username} is now connected. Head back to Discord and use /bet create.`
+              ? `Your account @${discordLinkResult?.username ?? authUser.username} is now connected.${
+                  discordLinkResult?.returnUrl ? " Taking you back to Discord…" : " Head back to Discord and use /bet create."
+                }`
               : failed
                 ? discordLinkError ?? "Something went wrong. Please try /setup again in Discord."
                 : "Connecting your AccountabiliBuddy account to Discord."}
@@ -598,7 +610,7 @@ export default function App() {
               className="mt-5 block w-full px-3 py-2 rounded-lg text-white transition-opacity"
               style={{ background: "#5865F2", fontSize: "13px", fontWeight: 600 }}
             >
-              Return to Discord
+              Return to Discord now
             </a>
           )}
 

@@ -9,6 +9,7 @@
 //
 // Commands:
 //   /setup         — first-time account linking or creation
+//   /profile       — show your linked account + betting record
 //   /bet create    — create a new bet in this channel
 //   /bet list      — list active bets you're involved in
 //   /bet status    — show the card for a specific bet
@@ -65,6 +66,10 @@ export const discordCommands = [
   new SlashCommandBuilder()
     .setName("setup")
     .setDescription("Link your AccountabiliBuddy account to Discord"),
+
+  new SlashCommandBuilder()
+    .setName("profile")
+    .setDescription("Show your AccountabiliBuddy account and betting record"),
 
   new SlashCommandBuilder()
     .setName("bet")
@@ -318,9 +323,76 @@ async function handleBetCommand(interaction: ChatInputCommandInteraction): Promi
 async function handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (interaction.commandName === "setup") {
     await handleSetupCommand(interaction);
+  } else if (interaction.commandName === "profile") {
+    await handleProfileCommand(interaction);
   } else if (interaction.commandName === "bet") {
     await handleBetCommand(interaction);
   }
+}
+
+// ── /profile command ──────────────────────────────────────────────────────────
+
+async function handleProfileCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  const user = await requireLinkedUser(interaction);
+  if (!user) return;
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const betsCol = await bets();
+  const myBets = betsCol
+    ? await betsCol.find({ $or: [{ challenger: user.username }, { acceptor: user.username }] }).toArray()
+    : [];
+
+  let wins = 0;
+  let losses = 0;
+  let active = 0;
+  let pending = 0;
+  let staked = 0;
+  for (const b of myBets) {
+    const side = b.challenger === user.username ? "challenger" : "acceptor";
+    if (b.status === "PENDING") {
+      pending += 1;
+    } else if (b.status === "ACTIVE") {
+      active += 1;
+    } else if (b.resolvedWinner) {
+      if (b.resolvedWinner === side) wins += 1;
+      else losses += 1;
+    }
+    const stake = Number(b.stake);
+    if (Number.isFinite(stake)) staked += stake;
+  }
+
+  const settled = wins + losses;
+  const winRate = settled > 0 ? Math.round((wins / settled) * 100) : null;
+
+  const embed = new EmbedBuilder()
+    .setColor(Colors.Blurple)
+    .setTitle(`📊 ${user.username}'s Profile`)
+    .setDescription(`Linked to <@${interaction.user.id}>`)
+    .addFields(
+      { name: "Record", value: `**${wins}**W – **${losses}**L${winRate !== null ? ` (${winRate}%)` : ""}`, inline: true },
+      { name: "Active", value: `${active}`, inline: true },
+      { name: "Pending", value: `${pending}`, inline: true },
+      { name: "Total bets", value: `${myBets.length}`, inline: true },
+      { name: "Total staked", value: `${staked.toFixed(2)} SOL`, inline: true },
+      {
+        name: "Wallet",
+        value: user.walletPubkey
+          ? `\`${user.walletPubkey.slice(0, 4)}…${user.walletPubkey.slice(-4)}\``
+          : "Provisioned on your first bet",
+        inline: true,
+      },
+    )
+    .setFooter({ text: "Use /bet create to start a new bet" });
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setLabel("Open dashboard")
+      .setStyle(ButtonStyle.Link)
+      .setURL(`${WEB_BASE_URL}/`),
+  );
+
+  await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
 // ── button handler ────────────────────────────────────────────────────────────
