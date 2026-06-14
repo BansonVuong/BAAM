@@ -762,6 +762,52 @@ const server = http.createServer(async (req, res) => {
       return json(res, 400, { error: "provide either betId or url query param" });
     }
 
+    // POST /imessage/participants/link { participantId }
+    // Links the current account to the opaque identifier supplied by Messages.framework.
+    if (req.method === "POST" && req.url === "/imessage/participants/link") {
+      const authUser = await getAuthenticatedUser(req);
+      if (!authUser) return json(res, 401, { error: "unauthorized" });
+      const col = await users();
+      if (!col) return dbUnconfigured(res);
+      const body = await readJson(req);
+      const participantId = normalizeIMessageParticipantId(body.participantId);
+      if (!participantId) return json(res, 400, { error: "valid participantId is required" });
+
+      const claimed = await col.findOne(
+        { imessageParticipantIds: participantId, id: { $ne: authUser.id } },
+        { projection: { username: 1 } },
+      );
+      if (claimed) return json(res, 409, { error: "this Messages identity is linked to another account" });
+
+      await col.updateOne(
+        { id: authUser.id },
+        { $addToSet: { imessageParticipantIds: participantId } },
+      );
+      return json(res, 200, { linked: true, username: authUser.username });
+    }
+
+    // POST /imessage/participants/resolve { participantIds: string[] }
+    if (req.method === "POST" && req.url === "/imessage/participants/resolve") {
+      const authUser = await getAuthenticatedUser(req);
+      if (!authUser) return json(res, 401, { error: "unauthorized" });
+      const col = await users();
+      if (!col) return dbUnconfigured(res);
+      const body = await readJson(req);
+      const rawIds = Array.isArray(body.participantIds) ? body.participantIds.slice(0, 50) : [];
+      const participantIds = Array.from(new Set(rawIds.map(normalizeIMessageParticipantId).filter((id): id is string => Boolean(id))));
+      if (!participantIds.length) return json(res, 200, { participants: [] });
+
+      const docs = await col.find(
+        { imessageParticipantIds: { $in: participantIds } },
+        { projection: { _id: 0, username: 1, imessageParticipantIds: 1 } },
+      ).toArray();
+      const participants = participantIds.flatMap((participantId) => {
+        const user = docs.find((doc) => doc.imessageParticipantIds?.includes(participantId));
+        return user ? [{ participantId, username: user.username }] : [];
+      });
+      return json(res, 200, { participants });
+    }
+
     // GET /imessage/bets/:id  — compact, iMessage-friendly card payload
     const imessageBetPathId = req.url ? decodeIMessageBetPathId(req.url) : null;
     if (req.method === "GET" && imessageBetPathId) {
@@ -1731,6 +1777,13 @@ function normalizeUsername(value: unknown): string | null {
   if (!username) return null;
   const valid = /^[a-zA-Z0-9._-]{3,24}$/.test(username);
   return valid ? username : null;
+}
+
+function normalizeIMessageParticipantId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const participantId = value.trim().toLowerCase();
+  if (!participantId || participantId.length > 128) return null;
+  return /^[a-z0-9-]+$/.test(participantId) ? participantId : null;
 }
 
 function toPublicUser(user: UserDoc): {

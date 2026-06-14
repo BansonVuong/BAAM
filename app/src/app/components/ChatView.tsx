@@ -810,9 +810,25 @@ export function ChatView({
   function handleSendBet(bet: NewBet): void {
     if (!activeGroup || !activeGroupData) return;
     const groupId = activeGroup;
+    const currentUsername = currentUser.username.trim().toLowerCase();
+    const recipientCandidates = (activeGroupData.memberUsernames ?? [])
+      .map((username) => username.trim())
+      .filter((username): username is string => Boolean(username) && username.toLowerCase() !== currentUsername);
+    const normalizedAcceptorInput = bet.acceptor.trim().toLowerCase();
+    const selectedRecipient = recipientCandidates.find(
+      (username) => username.toLowerCase() === normalizedAcceptorInput,
+    );
     const normalizedAcceptor = bet.sport
-      ? (bet.acceptor?.trim() || "anyone")
-      : bet.acceptor.trim();
+      ? (selectedRecipient ?? "anyone")
+      : selectedRecipient;
+    if (!normalizedAcceptor) {
+      showResult(
+        "Recipient required",
+        "Pick a valid member of this group as the bet recipient.",
+        "error",
+      );
+      return;
+    }
     void createBet({
       groupId,
       type: bet.type,
