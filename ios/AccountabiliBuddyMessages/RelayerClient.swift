@@ -98,12 +98,12 @@ final class RelayerClient {
         return response.participants
     }
 
-    func createConversation() async throws -> MessageConversationCreateResponse {
-        struct EmptyBody: Codable {}
+    func createConversation(participantIds: [String]) async throws -> MessageConversationCreateResponse {
+        struct CreateBody: Codable { let participantIds: [String] }
         return try await requestJSON(
             method: "POST",
             path: "/imessage/conversations",
-            body: EmptyBody(),
+            body: CreateBody(participantIds: participantIds),
             responseType: MessageConversationCreateResponse.self
         )
     }

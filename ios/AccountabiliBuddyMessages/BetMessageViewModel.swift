@@ -50,6 +50,8 @@ final class BetMessageViewModel: ObservableObject {
     private var authToken: String
     private var hasBootstrapped = false
     private var conversationFingerprint: String?
+    private var localParticipantId: String?
+    private var conversationParticipantIds: [String] = []
     private var pendingConversationId: String?
     private let client: RelayerClient
 
@@ -109,7 +111,9 @@ final class BetMessageViewModel: ObservableObject {
             defaults.set(response.token, forKey: authTokenKey)
             password = ""
             try await refreshProfile()
+            await linkCurrentMessagesIdentity()
             await refreshConversationState()
+            await synchronizeInitializedConversation()
             infoMessage = isCreatingAccount ? "Account created." : "Signed in."
         } catch {
             errorMessage = error.localizedDescription
@@ -160,13 +164,16 @@ final class BetMessageViewModel: ObservableObject {
     }
 
     func updateConversationParticipants(local: String, remote: [String]) async {
-        conversationFingerprint = ([local] + remote)
+        localParticipantId = local.lowercased()
+        conversationParticipantIds = ([local] + remote)
             .map { $0.lowercased() }
             .sorted()
-            .joined(separator: ".")
+        conversationFingerprint = conversationParticipantIds.joined(separator: ".")
         await bootstrap()
         guard isSignedIn else { return }
+        await linkCurrentMessagesIdentity()
         await refreshConversationState()
+        await synchronizeInitializedConversation()
     }
 
     func initializeConversation(sendDraft: (BetDraftMessage) -> Void) async {
@@ -177,7 +184,7 @@ final class BetMessageViewModel: ObservableObject {
             }
             isBusy = true
             errorMessage = nil
-            let created = try await client.createConversation()
+            let created = try await client.createConversation(participantIds: conversationParticipantIds)
             guard let inviteURL = URL(string: created.inviteUrl) else {
                 throw RelayerClientError.invalidResponse
             }
@@ -521,5 +528,32 @@ final class BetMessageViewModel: ObservableObject {
     private func persistConversationId(_ id: String) {
         guard let conversationFingerprint else { return }
         defaults.set(id, forKey: conversationKeyPrefix + conversationFingerprint)
+    }
+
+    private func linkCurrentMessagesIdentity() async {
+        guard let localParticipantId, !localParticipantId.isEmpty else { return }
+        do {
+            try await client.linkParticipant(localParticipantId)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func synchronizeInitializedConversation() async {
+        guard !conversationParticipantIds.isEmpty else { return }
+        let savedConversationId = conversationFingerprint.flatMap {
+            defaults.string(forKey: conversationKeyPrefix + $0)
+        }
+        guard conversation != nil || savedConversationId != nil else { return }
+        do {
+            let shared = try await client.createConversation(participantIds: conversationParticipantIds).conversation
+            conversation = shared
+            pendingConversation = nil
+            pendingConversationId = nil
+            persistConversationId(shared.id)
+            refreshRecipientCandidates()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }

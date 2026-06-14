@@ -185,6 +185,9 @@ export interface DiscordConversationDoc {
 
 export interface IMessageConversationDoc {
   id: string;
+  /** Stable hash of the opaque Messages.framework participant identifiers. */
+  participantFingerprint?: string;
+  participantIds?: string[];
   ownerUserId: string;
   ownerUsername: string;
   memberUserIds: string[];
@@ -278,6 +281,7 @@ async function ensureIndexes(db: Db): Promise<void> {
   await db.collection("users").createIndex({ usernameLower: 1 }, { unique: true });
   await db.collection("users").createIndex({ imessageParticipantIds: 1 }, { unique: true, sparse: true });
   await db.collection("imessageConversations").createIndex({ id: 1 }, { unique: true });
+  await db.collection("imessageConversations").createIndex({ participantFingerprint: 1 }, { unique: true, sparse: true });
   await db.collection("imessageConversations").createIndex({ memberUserIds: 1 });
   await db.collection("users").createIndex({ discordId: 1 }, { unique: true, sparse: true });
   await db.collection("bets").createIndex({ discordConversationId: 1 });

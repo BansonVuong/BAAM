@@ -806,10 +806,43 @@ const server = http.createServer(async (req, res) => {
       if (!authUser) return json(res, 401, { error: "unauthorized" });
       const col = await imessageConversations();
       if (!col) return dbUnconfigured(res);
+      const body = await readJson(req);
+      const rawParticipantIds = Array.isArray(body.participantIds) ? body.participantIds.slice(0, 50) : [];
+      const participantIds = Array.from(new Set(
+        rawParticipantIds
+          .map(normalizeIMessageParticipantId)
+          .filter((id): id is string => Boolean(id)),
+      )).sort();
+      const participantFingerprint = participantIds.length
+        ? crypto.createHash("sha256").update(participantIds.join(".")).digest("hex")
+        : null;
 
       const now = Date.now();
+      if (participantFingerprint) {
+        const existing = await col.findOne({ participantFingerprint });
+        if (existing) {
+          const joined = await col.findOneAndUpdate(
+            { id: existing.id },
+            {
+              $addToSet: {
+                memberUserIds: authUser.id,
+                memberUsernames: authUser.username,
+              },
+              $set: { participantIds, updatedAt: now },
+            },
+            { returnDocument: "after" },
+          );
+          if (!joined) return json(res, 404, { error: "conversation not found" });
+          return json(res, 200, {
+            conversation: toIMessageConversation(authUser, joined),
+            inviteUrl: buildIMessageConversationDeepLink(joined.id),
+          });
+        }
+      }
+
       const conversation: IMessageConversationDoc = {
         id: `imc-${crypto.randomBytes(18).toString("base64url")}`,
+        ...(participantFingerprint ? { participantFingerprint, participantIds } : {}),
         ownerUserId: authUser.id,
         ownerUsername: authUser.username,
         memberUserIds: [authUser.id],
@@ -817,7 +850,29 @@ const server = http.createServer(async (req, res) => {
         createdAt: now,
         updatedAt: now,
       };
-      await col.insertOne(conversation);
+      try {
+        await col.insertOne(conversation);
+      } catch (err) {
+        if (!participantFingerprint || !(err instanceof Error) || !err.name.startsWith("MongoServerError")) {
+          throw err;
+        }
+        const existing = await col.findOneAndUpdate(
+          { participantFingerprint },
+          {
+            $addToSet: {
+              memberUserIds: authUser.id,
+              memberUsernames: authUser.username,
+            },
+            $set: { participantIds, updatedAt: now },
+          },
+          { returnDocument: "after" },
+        );
+        if (!existing) throw err;
+        return json(res, 200, {
+          conversation: toIMessageConversation(authUser, existing),
+          inviteUrl: buildIMessageConversationDeepLink(existing.id),
+        });
+      }
       return json(res, 201, {
         conversation: toIMessageConversation(authUser, conversation),
         inviteUrl: buildIMessageConversationDeepLink(conversation.id),
