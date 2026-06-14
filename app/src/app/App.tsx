@@ -2,13 +2,12 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
-  MessageSquare, Shield, GitBranch, BarChart3,
+  MessageSquare, Shield, BarChart3,
   Zap, Sun, Moon, Bell, ChevronRight, Copy, Check
 } from "lucide-react";
 import { Mono, Avatar, Pill } from "./components/ui";
 import { ChatView }        from "./components/ChatView";
 import { EscrowView }      from "./components/EscrowView";
-import { GitView }         from "./components/GitView";
 import { LeaderboardView } from "./components/LeaderboardView";
 import { useRelayerHealth } from "../lib/useRelayer";
 import {
@@ -31,7 +30,7 @@ import {
 } from "../lib/groupNotifications";
 
 /* ── Navigation config ─────────────────────────────────── */
-type ViewId = "chat" | "escrow" | "git" | "leaderboard";
+type ViewId = "chat" | "escrow" | "leaderboard";
 
 const NAV: {
   id:       ViewId;
@@ -42,7 +41,6 @@ const NAV: {
 }[] = [
   { id:"chat",        label:"Group Chat",   sublabel:"Lobby & Bets",     Icon:MessageSquare },
   { id:"escrow",      label:"Escrow Card",  sublabel:"P2P Wager Mode",   Icon:Shield },
-  { id:"git",         label:"Dev Bet",      sublabel:"AI Git Inspector", Icon:GitBranch },
   { id:"leaderboard", label:"Leaderboard",  sublabel:"Rankings & Stats", Icon:BarChart3 },
 ];
 
@@ -801,7 +799,6 @@ export default function App() {
                 />
               )}
               {activeView === "escrow"      && <EscrowView onOpenBetChat={openBetInChat} />}
-              {activeView === "git"         && <GitView />}
               {activeView === "leaderboard" && <LeaderboardView />}
             </motion.div>
           </AnimatePresence>

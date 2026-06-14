@@ -135,11 +135,14 @@ function StatusTag({ status }: { status: Bet["status"] }) {
   );
 }
 
-function BetTypeTag({ type }: { type: Bet["type"] }) {
+function BetTypeTag({ bet }: { bet: Bet }) {
+  const isSports = bet.validation === "sports";
+  const showDevPalette = isSports || bet.type === "DEV";
+  const label = isSports ? "SPORTS" : bet.type;
   return (
-    <Pill color={type === "DEV" ? "teal" : "purple"}>
-      {type === "DEV" ? <Zap size={8} /> : <Shield size={8} />}
-      BET TYPE: {type}
+    <Pill color={showDevPalette ? "teal" : "purple"}>
+      {showDevPalette ? <Zap size={8} /> : <Shield size={8} />}
+      BET TYPE: {label}
     </Pill>
   );
 }
@@ -198,6 +201,9 @@ function EmbeddedBetCard({
     && bet.challenger.toLowerCase() !== voterName.toLowerCase()
     && isAddressedToViewer
     && !isAccepting;
+  const pendingAcceptorLabel = bet.acceptor.toLowerCase() === "anyone"
+    ? "any eligible member"
+    : bet.acceptor;
   // Sports bets are settled by the ESPN scraper, not witness votes.
   const isSports = bet.validation === "sports";
   const isParticipant = isBetParticipant(bet, voterName);
@@ -206,7 +212,7 @@ function EmbeddedBetCard({
   return (
     <div className="w-full max-w-[420px] rounded-2xl border border-border overflow-hidden bg-card">
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
-        <BetTypeTag type={bet.type} />
+        <BetTypeTag bet={bet} />
         <StatusTag status={bet.status} />
       </div>
 
@@ -228,7 +234,7 @@ function EmbeddedBetCard({
             {bet.stake} {bet.currency}
           </span>
           <span className="text-muted-foreground" style={{ fontSize: "11px" }}>
-            witnesses decide outcome
+            {isSports ? "ESPN final result decides outcome" : "witnesses decide outcome"}
           </span>
         </div>
       </div>
@@ -276,7 +282,7 @@ function EmbeddedBetCard({
           ) : (
             <div className="rounded-lg border border-amber-500/25 bg-amber-500/8 px-3 py-2">
               <span className="text-amber-500" style={{ fontSize: "11px", fontWeight: 700 }}>
-                Waiting for {bet.acceptor} to accept
+                Waiting for {pendingAcceptorLabel} to accept
               </span>
             </div>
           )
@@ -804,7 +810,7 @@ export function ChatView({
   function handleSendBet(bet: NewBet): void {
     if (!activeGroup || !activeGroupData) return;
     const groupId = activeGroup;
-    const normalizedAcceptor = bet.type === "DEV"
+    const normalizedAcceptor = bet.sport
       ? (bet.acceptor?.trim() || "anyone")
       : bet.acceptor.trim();
     void createBet({
@@ -818,7 +824,7 @@ export function ChatView({
       // e.g. 2->2, 3->2, 4->2, 5->3, 6->3.
       witnesses: Math.max(2, Math.ceil(activeGroupData.members / 2)),
       minBettors: 2,
-      // DEV "sports" bets: settled by the ESPN scraper instead of witnesses.
+      // Sports bets: settled by the ESPN scraper instead of witnesses.
       ...(bet.sport ? {
         sport: bet.sport,
         gameId: bet.gameId,

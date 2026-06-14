@@ -66,8 +66,8 @@ export interface BetDoc {
   votesByVoter?: Record<string, "challenger" | "acceptor">;
   /** Winning side once witness quorum is met (or the ESPN scraper settles a sports bet). */
   resolvedWinner?: "challenger" | "acceptor";
-  // ── external-validation (DEV "sports") bets ──────────────────────────────────
-  /** Set for DEV bets resolved by the ESPN scraper instead of witness votes. */
+  // ── external-validation (sports bets) ─────────────────────────────────────────
+  /** Set for sports bets resolved by the ESPN scraper instead of witness votes. */
   validation?: "sports";
   /** ESPN sport for a sports bet. */
   sport?: "soccer" | "nba" | "nfl";

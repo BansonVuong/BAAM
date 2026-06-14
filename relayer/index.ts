@@ -936,7 +936,7 @@ const server = http.createServer(async (req, res) => {
       const type = body.type === "PERSONAL" || body.type === "DEV" ? body.type : null;
       const challenger = authUser.username;
       const acceptorInput = typeof body.acceptor === "string" ? body.acceptor.trim() : "";
-      const terms = typeof body.terms === "string" ? body.terms.trim() : "";
+      let terms = typeof body.terms === "string" ? body.terms.trim() : "";
       const stakeInput = typeof body.stake === "string" ? body.stake.trim() : `${body.stake ?? ""}`.trim();
       // All bets are on-chain SOL now (POINTS bets were scrapped).
       const currency = "SOL";
@@ -947,17 +947,20 @@ const server = http.createServer(async (req, res) => {
       const sport = isSports ? (body.sport as string) : null;
       const espnGameId = isSports ? `${body.gameId ?? ""}`.trim() : "";
       const challengerBacksHome = isSports ? body.backsHome !== false : undefined;
-      const homeTeam = isSports ? `${body.homeTeam ?? ""}`.trim() : undefined;
-      const awayTeam = isSports ? `${body.awayTeam ?? ""}`.trim() : undefined;
+      let homeTeam = isSports ? `${body.homeTeam ?? ""}`.trim() : undefined;
+      let awayTeam = isSports ? `${body.awayTeam ?? ""}`.trim() : undefined;
 
       if (!isIMessage && !groupId) return json(res, 400, { error: "groupId is required" });
       if (!type) return json(res, 400, { error: "type must be PERSONAL or DEV" });
+      if (type === "DEV" && !isSports) {
+        return json(res, 400, { error: "DEV bets are sports bets now; include sport and gameId" });
+      }
       const acceptor = type === "DEV" ? (acceptorInput || "anyone") : acceptorInput;
       if (!acceptor) return json(res, 400, { error: "acceptor is required" });
       if (acceptorInput && acceptorInput.toLowerCase() === challenger.toLowerCase()) {
         return json(res, 400, { error: "you cannot challenge yourself" });
       }
-      if (terms.length < 8) return json(res, 400, { error: "terms must be at least 8 characters" });
+      if (!isSports && terms.length < 8) return json(res, 400, { error: "terms must be at least 8 characters" });
       const numericStake = Number(stakeInput);
       if (!stakeInput || !Number.isFinite(numericStake) || numericStake <= 0) {
         return json(res, 400, { error: "stake must be a positive number" });
@@ -971,6 +974,29 @@ const server = http.createServer(async (req, res) => {
         if (!/^\d+$/.test(espnGameId)) {
           return json(res, 400, { error: "gameId must be a numeric ESPN game id" });
         }
+        if (!homeTeam || !awayTeam) {
+          return json(res, 400, { error: "homeTeam and awayTeam are required for sports bets" });
+        }
+        let gameSnapshot: Awaited<ReturnType<typeof fetchGameResult>> = null;
+        try {
+          gameSnapshot = await fetchGameResult(sport as Sport, espnGameId);
+        } catch (err) {
+          return json(res, 502, {
+            error: `failed to validate selected game: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
+        if (gameSnapshot?.isFinal) {
+          return json(res, 400, { error: "selected game is already final" });
+        }
+        homeTeam = gameSnapshot?.homeTeam?.trim() || homeTeam;
+        awayTeam = gameSnapshot?.awayTeam?.trim() || awayTeam;
+        if (terms.length < 8) {
+          const backedTeam = challengerBacksHome ? homeTeam : awayTeam;
+          terms = `${sport?.toUpperCase()}: ${awayTeam} @ ${homeTeam} — ${challenger} backs ${backedTeam}.`;
+        }
+      }
+      if (terms.length < 8) {
+        return json(res, 400, { error: "terms must be at least 8 characters" });
       }
 
       const group = groupId
@@ -1142,7 +1168,7 @@ const server = http.createServer(async (req, res) => {
         {
           $set: {
             pendingBet: true,
-            lastMsg: `${challenger} posted a new ${type === "DEV" ? "dev" : "personal"} bet`,
+            lastMsg: `${challenger} posted a new ${isSports ? "sports" : type === "DEV" ? "dev" : "personal"} bet`,
             time: ts,
             updatedAt: now,
           },

@@ -10,8 +10,6 @@ import { getScoreboard, type ScoreboardGame, type SportKind } from "../../lib/re
 
 /* ── Types ─────────────────────────────────────────────── */
 export type BetType = "PERSONAL" | "DEV";
-/** Sub-mode for DEV bets: AI git inspector vs. external ESPN sports result. */
-export type DevMode = "ai-git" | "sports";
 
 export interface NewBet {
   type:       BetType;
@@ -20,7 +18,7 @@ export interface NewBet {
   terms:      string;
   stake:      string;
   currency:   "SOL";
-  // Present for DEV "sports" bets, settled by the ESPN scraper.
+  // Present for sports bets (stored internally as DEV for backwards compatibility).
   sport?:     SportKind;
   gameId?:    string;
   backsHome?: boolean;
@@ -62,7 +60,6 @@ export function SendBetModal({
 }: SendBetModalProps) {
   const [step,     setStep]     = useState(0);            // 0=type, 1=terms, 2=stake, 3=confirm
   const [betType,  setBetType]  = useState<BetType>("PERSONAL");
-  const [devMode,  setDevMode]  = useState<DevMode>("ai-git");
   const [acceptor, setAcceptor] = useState("");
   const [terms,    setTerms]    = useState("");
   const [stake,    setStake]    = useState("");
@@ -78,7 +75,7 @@ export function SendBetModal({
   const [selectedGame, setSelectedGame] = useState<ScoreboardGame | null>(null);
   const [backsHome,    setBacksHome]    = useState(true);
 
-  const isSports = betType === "DEV" && devMode === "sports";
+  const isSports = betType === "DEV";
   const backedTeam = selectedGame ? (backsHome ? selectedGame.homeTeam : selectedGame.awayTeam) : "";
   const sportsTerms = selectedGame
     ? `${SPORT_LABELS[sport]}: ${selectedGame.awayTeam} @ ${selectedGame.homeTeam} — I back ${backedTeam}. Settled by the final ESPN result.`
@@ -88,7 +85,7 @@ export function SendBetModal({
   useEffect(() => {
     if (!open) {
       setTimeout(() => {
-        setStep(0); setBetType("PERSONAL"); setDevMode("ai-git"); setAcceptor("");
+        setStep(0); setBetType("PERSONAL"); setAcceptor("");
         setTerms(""); setStake(""); setSent(false);
         setSport("nba"); setGames([]); setGamesError(null); setSelectedGame(null); setBacksHome(true);
       }, 300);
@@ -109,7 +106,7 @@ export function SendBetModal({
     return () => { alive = false; };
   }, [open, isSports, sport]);
 
-  /* focus terms textarea on step 1 (witness/ai-git bets only) */
+  /* focus terms textarea on step 1 (witness bets only) */
   useEffect(() => {
     if (step === 1 && !isSports && inputRef.current) {
       setTimeout(() => inputRef.current?.focus(), 120);
@@ -118,11 +115,11 @@ export function SendBetModal({
 
   const canStep1 = hasChallengeTargets && (
     isSports ? selectedGame !== null
-    : betType === "DEV" ? true
     : acceptor.trim().length > 0
   );
   const canStep2 = isSports ? selectedGame !== null : terms.trim().length > 8;
   const canStep3 = stake.trim().length > 0 && Number(stake) > 0;
+  const summaryAcceptor = isSports ? (acceptor.trim() || "Anyone") : acceptor.trim();
 
   function handleSend() {
     if (!hasChallengeTargets) return;
@@ -284,11 +281,11 @@ export function SendBetModal({
                             }
                           </div>
                           <p className="text-foreground" style={{ fontSize: "13px", fontWeight: 700 }}>
-                            {t === "DEV" ? "Dev Bet" : "Personal Bet"}
+                            {t === "DEV" ? "Sports Bet" : "Personal Bet"}
                           </p>
                           <p className="text-muted-foreground leading-snug" style={{ fontSize: "10px" }}>
                             {t === "DEV"
-                              ? "Verified by AI Git inspector — no judges needed"
+                              ? "Settled automatically from the final ESPN result"
                               : "Peer accountability — group votes on outcome"}
                           </p>
                           {betType === t && (
@@ -302,128 +299,105 @@ export function SendBetModal({
                       ))}
                     </div>
 
-                    {/* DEV sub-mode — AI Git vs. external sports result */}
-                    {betType === "DEV" && (
+                    {/* Sports picker */}
+                    {isSports && (
                       <motion.div
                         initial={{ opacity: 0, y: 8 }}
                         animate={{ opacity: 1, y: 0 }}
                         className="space-y-3"
                       >
                         <Mono className="text-muted-foreground uppercase" style={{ fontSize: "9px", letterSpacing: "0.1em" } as React.CSSProperties}>
-                          How is it verified?
+                          Select sport and matchup
                         </Mono>
-                        <div className="grid grid-cols-2 gap-2">
-                          {([
-                            { id: "ai-git" as DevMode, label: "AI Git", desc: "Inspector scans the repo" },
-                            { id: "sports" as DevMode, label: "Sports", desc: "ESPN final result" },
-                          ]).map(m => (
-                            <button
-                              key={m.id}
-                              onClick={() => setDevMode(m.id)}
-                              className="p-3 rounded-xl border text-left transition-all duration-150"
-                              style={{
-                                background:  devMode === m.id ? "rgba(20,241,149,0.08)" : "var(--muted)",
-                                borderColor: devMode === m.id ? "rgba(20,241,149,0.4)" : "var(--border)",
-                              }}
-                            >
-                              <p className="text-foreground" style={{ fontSize: "12px", fontWeight: 700 }}>{m.label}</p>
-                              <p className="text-muted-foreground" style={{ fontSize: "10px" }}>{m.desc}</p>
-                            </button>
-                          ))}
-                        </div>
+                        <div className="space-y-3">
+                          {/* Sport tabs */}
+                          <div className="flex gap-1.5">
+                            {(["nba", "nfl", "soccer"] as SportKind[]).map(s => (
+                              <button
+                                key={s}
+                                onClick={() => setSport(s)}
+                                className="flex-1 py-1.5 rounded-lg border transition-all duration-150"
+                                style={{
+                                  background:  sport === s ? "rgba(153,69,255,0.12)" : "var(--muted)",
+                                  borderColor: sport === s ? "rgba(153,69,255,0.4)" : "var(--border)",
+                                  color:       sport === s ? "#9945FF" : "var(--muted-foreground)",
+                                  fontSize: "11px", fontWeight: sport === s ? 700 : 500,
+                                }}
+                              >
+                                {SPORT_LABELS[s]}
+                              </button>
+                            ))}
+                          </div>
 
-                        {/* Sports picker */}
-                        {isSports && (
-                          <div className="space-y-3">
-                            {/* Sport tabs */}
-                            <div className="flex gap-1.5">
-                              {(["nba", "nfl", "soccer"] as SportKind[]).map(s => (
+                          {/* Games list */}
+                          <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1">
+                            {loadingGames && (
+                              <p className="text-muted-foreground text-center py-3" style={{ fontSize: "11px" }}>Loading games…</p>
+                            )}
+                            {gamesError && (
+                              <p className="text-center py-3" style={{ fontSize: "11px", color: "#FF7E7E" }}>{gamesError}</p>
+                            )}
+                            {!loadingGames && !gamesError && games.length === 0 && (
+                              <p className="text-muted-foreground text-center py-3" style={{ fontSize: "11px" }}>
+                                No {SPORT_LABELS[sport]} games on the board right now.
+                              </p>
+                            )}
+                            {games.map(g => {
+                              const picked = selectedGame?.gameId === g.gameId;
+                              return (
                                 <button
-                                  key={s}
-                                  onClick={() => setSport(s)}
-                                  className="flex-1 py-1.5 rounded-lg border transition-all duration-150"
+                                  key={g.gameId}
+                                  disabled={g.isFinal}
+                                  onClick={() => { setSelectedGame(g); setBacksHome(true); }}
+                                  className="w-full px-3 py-2 rounded-lg border text-left transition-all duration-150 disabled:opacity-40"
                                   style={{
-                                    background:  sport === s ? "rgba(153,69,255,0.12)" : "var(--muted)",
-                                    borderColor: sport === s ? "rgba(153,69,255,0.4)" : "var(--border)",
-                                    color:       sport === s ? "#9945FF" : "var(--muted-foreground)",
-                                    fontSize: "11px", fontWeight: sport === s ? 700 : 500,
+                                    background:  picked ? "rgba(153,69,255,0.1)" : "var(--muted)",
+                                    borderColor: picked ? "rgba(153,69,255,0.45)" : "var(--border)",
                                   }}
                                 >
-                                  {SPORT_LABELS[s]}
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="text-foreground truncate" style={{ fontSize: "12px", fontWeight: 600 }}>
+                                      {g.awayTeam} @ {g.homeTeam}
+                                    </span>
+                                    <Mono className="text-muted-foreground shrink-0" style={{ fontSize: "9px" } as React.CSSProperties}>
+                                      {g.isFinal ? "FINAL" : (g.status || "—")}
+                                    </Mono>
+                                  </div>
                                 </button>
-                              ))}
-                            </div>
+                              );
+                            })}
+                          </div>
 
-                            {/* Games list */}
-                            <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1">
-                              {loadingGames && (
-                                <p className="text-muted-foreground text-center py-3" style={{ fontSize: "11px" }}>Loading games…</p>
-                              )}
-                              {gamesError && (
-                                <p className="text-center py-3" style={{ fontSize: "11px", color: "#FF7E7E" }}>{gamesError}</p>
-                              )}
-                              {!loadingGames && !gamesError && games.length === 0 && (
-                                <p className="text-muted-foreground text-center py-3" style={{ fontSize: "11px" }}>
-                                  No {SPORT_LABELS[sport]} games on the board right now.
-                                </p>
-                              )}
-                              {games.map(g => {
-                                const picked = selectedGame?.gameId === g.gameId;
-                                return (
+                          {/* Side picker */}
+                          {selectedGame && (
+                            <div className="space-y-1.5">
+                              <Mono className="text-muted-foreground uppercase" style={{ fontSize: "9px", letterSpacing: "0.1em" } as React.CSSProperties}>
+                                Which side are you backing?
+                              </Mono>
+                              <div className="grid grid-cols-2 gap-2">
+                                {([
+                                  { home: false, team: selectedGame.awayTeam },
+                                  { home: true,  team: selectedGame.homeTeam },
+                                ]).map(opt => (
                                   <button
-                                    key={g.gameId}
-                                    disabled={g.isFinal}
-                                    onClick={() => { setSelectedGame(g); setBacksHome(true); }}
-                                    className="w-full px-3 py-2 rounded-lg border text-left transition-all duration-150 disabled:opacity-40"
+                                    key={opt.team}
+                                    onClick={() => setBacksHome(opt.home)}
+                                    className="px-3 py-2 rounded-lg border text-left transition-all duration-150"
                                     style={{
-                                      background:  picked ? "rgba(153,69,255,0.1)" : "var(--muted)",
-                                      borderColor: picked ? "rgba(153,69,255,0.45)" : "var(--border)",
+                                      background:  backsHome === opt.home ? "rgba(20,241,149,0.1)" : "var(--muted)",
+                                      borderColor: backsHome === opt.home ? "rgba(20,241,149,0.45)" : "var(--border)",
                                     }}
                                   >
-                                    <div className="flex items-center justify-between gap-2">
-                                      <span className="text-foreground truncate" style={{ fontSize: "12px", fontWeight: 600 }}>
-                                        {g.awayTeam} @ {g.homeTeam}
-                                      </span>
-                                      <Mono className="text-muted-foreground shrink-0" style={{ fontSize: "9px" } as React.CSSProperties}>
-                                        {g.isFinal ? "FINAL" : (g.status || "—")}
-                                      </Mono>
-                                    </div>
+                                    <Mono className="text-muted-foreground block" style={{ fontSize: "8px" } as React.CSSProperties}>
+                                      {opt.home ? "HOME" : "AWAY"}
+                                    </Mono>
+                                    <span className="text-foreground truncate block" style={{ fontSize: "12px", fontWeight: 700 }}>{opt.team}</span>
                                   </button>
-                                );
-                              })}
-                            </div>
-
-                            {/* Side picker */}
-                            {selectedGame && (
-                              <div className="space-y-1.5">
-                                <Mono className="text-muted-foreground uppercase" style={{ fontSize: "9px", letterSpacing: "0.1em" } as React.CSSProperties}>
-                                  Which side are you backing?
-                                </Mono>
-                                <div className="grid grid-cols-2 gap-2">
-                                  {([
-                                    { home: false, team: selectedGame.awayTeam },
-                                    { home: true,  team: selectedGame.homeTeam },
-                                  ]).map(opt => (
-                                    <button
-                                      key={opt.team}
-                                      onClick={() => setBacksHome(opt.home)}
-                                      className="px-3 py-2 rounded-lg border text-left transition-all duration-150"
-                                      style={{
-                                        background:  backsHome === opt.home ? "rgba(20,241,149,0.1)" : "var(--muted)",
-                                        borderColor: backsHome === opt.home ? "rgba(20,241,149,0.45)" : "var(--border)",
-                                      }}
-                                    >
-                                      <Mono className="text-muted-foreground block" style={{ fontSize: "8px" } as React.CSSProperties}>
-                                        {opt.home ? "HOME" : "AWAY"}
-                                      </Mono>
-                                      <span className="text-foreground truncate block" style={{ fontSize: "12px", fontWeight: 700 }}>{opt.team}</span>
-                                    </button>
-                                  ))}
-                                </div>
+                                ))}
                               </div>
-                            )}
-                          </div>
-                        )}
+                            </div>
+                          )}
+                        </div>
                       </motion.div>
                     )}
 
@@ -521,23 +495,16 @@ export function SendBetModal({
                           ref={inputRef}
                           value={terms}
                           onChange={e => setTerms(e.target.value)}
-                          placeholder={
-                            betType === "DEV"
-                              ? "e.g. I bet Sarah cannot merge a working OAuth feature before end of Friday"
-                              : "e.g. I bet Kevin cannot complete a 5k run before 8 AM tomorrow"
-                          }
+                          placeholder="e.g. I bet Kevin cannot complete a 5k run before 8 AM tomorrow"
                           rows={4}
                           className="w-full bg-transparent text-foreground placeholder:text-muted-foreground outline-none resize-none p-4 leading-relaxed"
                           style={{ fontSize: "13px" }}
                         />
                         <div className="px-4 pb-2 flex items-center justify-between">
                           <div className="flex items-center gap-1.5">
-                            {betType === "PERSONAL"
-                              ? <Shield size={10} className="text-muted-foreground" />
-                              : <Zap size={10} className="text-muted-foreground" />
-                            }
+                            <Shield size={10} className="text-muted-foreground" />
                             <Mono className="text-muted-foreground" style={{ fontSize: "9px" } as React.CSSProperties}>
-                              {betType === "PERSONAL" ? "WITNESS VERIFIED" : "AI GIT VERIFIED"}
+                              WITNESS VERIFIED
                             </Mono>
                           </div>
                           <Mono
@@ -554,22 +521,6 @@ export function SendBetModal({
                     </div>
                     )}
 
-                    {betType === "DEV" && !isSports && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="flex items-start gap-2.5 p-3 rounded-xl"
-                        style={{
-                          background:  "rgba(20,241,149,0.06)",
-                          border:      "1px solid rgba(20,241,149,0.2)",
-                        }}
-                      >
-                        <AlertCircle size={13} style={{ color: "#14F195", marginTop: 1, flexShrink: 0 }} />
-                        <p className="text-muted-foreground leading-snug" style={{ fontSize: "11px" }}>
-                          The AI inspector will scan the target repo's git log for qualifying commits. Make sure the terms include a repo URL or the challenger's GitHub handle.
-                        </p>
-                      </motion.div>
-                    )}
                   </motion.div>
                 )}
 
@@ -684,7 +635,7 @@ export function SendBetModal({
                           <div className="flex items-center gap-2">
                             <Pill color={betType === "DEV" ? "teal" : "purple"}>
                               {betType === "DEV" ? <Zap size={8} /> : <Shield size={8} />}
-                              {betType}
+                              {betType === "DEV" ? "SPORTS" : "PERSONAL"}
                             </Pill>
                             <Pill color="amber">
                               <Clock size={8} />
@@ -693,7 +644,7 @@ export function SendBetModal({
                           </div>
 
                           <p className="text-foreground leading-snug" style={{ fontSize: "15px", fontWeight: 700 }}>
-                            "{terms}"
+                            "{isSports ? sportsTerms : terms}"
                           </p>
 
                           <div className="grid grid-cols-2 gap-2">
@@ -706,17 +657,17 @@ export function SendBetModal({
                                 <span className="text-foreground" style={{ fontSize: "12px", fontWeight: 600 }}>You</span>
                               </div>
                             </div>
-                            {acceptor && (
+                            {(isSports || summaryAcceptor) && (
                               <div>
                                 <Mono className="text-muted-foreground block mb-1" style={{ fontSize: "9px", letterSpacing: "0.08em" } as React.CSSProperties}>
                                   ACCEPTOR
                                 </Mono>
                                 <div className="flex items-center gap-1.5">
                                   <Avatar
-                                    initials={acceptor.slice(0, 2).toUpperCase()}
+                                    initials={summaryAcceptor.slice(0, 2).toUpperCase()}
                                     size={20}
                                   />
-                                  <span className="text-foreground" style={{ fontSize: "12px", fontWeight: 600 }}>{acceptor}</span>
+                                  <span className="text-foreground" style={{ fontSize: "12px", fontWeight: 600 }}>{summaryAcceptor}</span>
                                 </div>
                               </div>
                             )}
@@ -748,7 +699,7 @@ export function SendBetModal({
                         >
                           <Users size={11} className="text-muted-foreground shrink-0" />
                           <p className="text-muted-foreground" style={{ fontSize: "11px" }}>
-                            Group members will be notified and can witness the outcome.
+                            Group members will be notified and can follow the result.
                           </p>
                         </div>
                       </>

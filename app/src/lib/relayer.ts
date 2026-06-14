@@ -286,8 +286,8 @@ export interface Bet {
   createSig?: string;
   acceptSig?: string;
   settleSig?: string;
-  // ── external-validation (DEV "sports") bets ──────────────────────────────────
-  /** Present for DEV bets settled by the ESPN scraper instead of witness votes. */
+  // ── external-validation (sports bets) ─────────────────────────────────────────
+  /** Present for sports bets settled by the ESPN scraper instead of witness votes. */
   validation?: "sports";
   sport?: SportKind;
   espnGameId?: string;
@@ -368,7 +368,7 @@ export function createBet(input: {
   currency: "SOL";
   witnesses?: number;
   minBettors?: number;
-  // DEV "sports" bets: settled by the ESPN scraper.
+  // Sports bets (internal DEV type): settled by the ESPN scraper.
   sport?: SportKind;
   gameId?: string;
   backsHome?: boolean;
