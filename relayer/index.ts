@@ -1346,6 +1346,21 @@ const server = http.createServer(async (req, res) => {
         return json(res, 403, { error: "group membership required" });
       }
       const current = normalizeBetDoc(existing);
+      const voterLower = voter.toLowerCase();
+      const isParticipant = [
+        current.challenger,
+        current.acceptor,
+        current.acceptedBy,
+        current.opponentUsername,
+      ].some(
+        (name) => typeof name === "string" && name.trim().toLowerCase() === voterLower,
+      );
+      if (isParticipant) {
+        return json(res, 403, {
+          error: "bet participants cannot vote as witnesses",
+          bet: current,
+        });
+      }
       if (current.validation === "sports") {
         return json(res, 409, {
           error: "sports bets are settled by the ESPN result, not witness votes",

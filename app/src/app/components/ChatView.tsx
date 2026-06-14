@@ -77,6 +77,19 @@ function getResolvedWinner(bet: Bet): BetVoteChoice | undefined {
 function isBetCompleted(bet: Bet): boolean {
   return bet.status === "COMPLETED" || bet.status === "RESOLVED" || Boolean(getResolvedWinner(bet));
 }
+
+function isBetParticipant(bet: Bet, username: string): boolean {
+  const normalizedUsername = username.trim().toLowerCase();
+  if (!normalizedUsername) return false;
+  return [
+    bet.challenger,
+    bet.acceptor,
+    bet.acceptedBy,
+    bet.opponentUsername,
+  ].some(
+    (name) => typeof name === "string" && name.trim().toLowerCase() === normalizedUsername,
+  );
+}
 const MIN_REAL_TIMESTAMP_MS = Date.UTC(2000, 0, 1);
 
 function formatChatTime(timestampMs: number | undefined, fallback: string): string {
@@ -187,7 +200,8 @@ function EmbeddedBetCard({
     && !isAccepting;
   // Sports bets are settled by the ESPN scraper, not witness votes.
   const isSports = bet.validation === "sports";
-  const canVote = !isSports && bet.status === "ACTIVE" && !isResolved && !winner && !isVoting;
+  const isParticipant = isBetParticipant(bet, voterName);
+  const canVote = !isSports && !isParticipant && bet.status === "ACTIVE" && !isResolved && !winner && !isVoting;
 
   return (
     <div className="w-full max-w-[420px] rounded-2xl border border-border overflow-hidden bg-card">
@@ -270,6 +284,12 @@ function EmbeddedBetCard({
           <div className="rounded-lg border border-[#9945FF]/25 bg-[#9945FF]/8 px-3 py-2">
             <span className="text-[#9945FF]" style={{ fontSize: "11px", fontWeight: 700 }}>
               Locked — awaiting final {(bet.sport ?? "game").toUpperCase()} result
+            </span>
+          </div>
+        ) : isParticipant ? (
+          <div className="rounded-lg border border-amber-500/25 bg-amber-500/8 px-3 py-2">
+            <span className="text-amber-500" style={{ fontSize: "11px", fontWeight: 700 }}>
+              Bet participants cannot vote as witnesses
             </span>
           </div>
         ) : (
@@ -711,6 +731,7 @@ export function ChatView({
   function handleVote(betId: string, votedFor: BetVoteChoice): void {
     const current = betsById[betId];
     if (!current || isBetCompleted(current) || current.status !== "ACTIVE") return;
+    if (isBetParticipant(current, currentUser.username)) return;
 
     const candidateName = votedFor === "challenger" ? current.challenger : current.acceptor;
     const previousVote = getVotesByVoter(current)[currentUser.username];
