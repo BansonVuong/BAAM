@@ -1013,7 +1013,7 @@ const server = http.createServer(async (req, res) => {
       const acceptorInput = typeof body.acceptor === "string" ? body.acceptor.trim() : "";
       let terms = typeof body.terms === "string" ? body.terms.trim() : "";
       const stakeInput = typeof body.stake === "string" ? body.stake.trim() : `${body.stake ?? ""}`.trim();
-      // All bets are on-chain SOL now (POINTS bets were scrapped).
+      // All bets are on-chain SOL now.
       const currency = "SOL";
 
       // DEV "sports" bets are settled by the ESPN scraper rather than witness votes.
@@ -1564,7 +1564,7 @@ const server = http.createServer(async (req, res) => {
       if (!col) return dbUnconfigured(res);
       const docs = await col
         .find({}, { projection: { _id: 0 } })
-        .sort({ sol: -1, pals: -1 })
+        .sort({ sol: -1 })
         .toArray();
       return json(res, 200, { players: docs });
     }
@@ -1575,7 +1575,7 @@ const server = http.createServer(async (req, res) => {
       if (!col) return dbUnconfigured(res);
       const docs = await col
         .find({}, { projection: { _id: 0 } })
-        .sort({ sol: -1, updatedAt: -1, pals: -1 })
+        .sort({ sol: -1, updatedAt: -1 })
         .toArray();
       return json(res, 200, { profiles: docs });
     }
@@ -1605,7 +1605,6 @@ const server = http.createServer(async (req, res) => {
         initials: toInitials(typeof body.initials === "string" ? body.initials : body.name),
         github: typeof body.github === "string" && body.github.trim() ? body.github.trim() : `user-${now}`,
         bio: typeof body.bio === "string" ? body.bio.trim() : undefined,
-        pals: toFiniteNumber(body.pals, 0),
         sol: toFiniteNumber(body.sol, 0),
         wins: toFiniteNumber(body.wins, 0),
         disputes: toFiniteNumber(body.disputes, 0),
@@ -1630,7 +1629,6 @@ const server = http.createServer(async (req, res) => {
       if (typeof body.initials === "string" && body.initials.trim()) update.initials = toInitials(body.initials);
       if (typeof body.github === "string" && body.github.trim()) update.github = body.github.trim();
       if (typeof body.bio === "string") update.bio = body.bio.trim();
-      if (isFiniteNumber(body.pals)) update.pals = body.pals;
       if (isFiniteNumber(body.sol)) update.sol = body.sol;
       if (isFiniteNumber(body.wins)) update.wins = body.wins;
       if (isFiniteNumber(body.disputes)) update.disputes = body.disputes;

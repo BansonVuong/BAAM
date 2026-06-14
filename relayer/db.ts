@@ -120,7 +120,6 @@ export interface ProfileDoc {
   initials: string;
   github: string;
   bio?: string;
-  pals: number;
   sol: number;
   wins: number;
   disputes: number;
@@ -138,8 +137,6 @@ export interface PlayerDoc {
   name: string;
   initials: string;
   github: string;
-  pals: number;
-  palsDelta: number;
   sol: number;
   solDelta: number;
   wins: number;
