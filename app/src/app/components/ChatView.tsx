@@ -393,7 +393,13 @@ function Message({
   );
 }
 
-export function ChatView({ currentUser }: { currentUser: AuthUser }) {
+export function ChatView({
+  currentUser,
+  onUnreadCountChange,
+}: {
+  currentUser: AuthUser;
+  onUnreadCountChange?: (count: number) => void;
+}) {
   const [activeGroup, setActiveGroup] = useState<string>("");
   const [input, setInput] = useState("");
   const [betModalOpen, setBetModalOpen] = useState(false);
@@ -410,7 +416,11 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
   const [dialogInput, setDialogInput] = useState("");
   const [dialogBusy, setDialogBusy] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
+  const [unreadByGroup, setUnreadByGroup] = useState<Record<string, number>>({});
+  const [lastReadByGroup, setLastReadByGroup] = useState<Record<string, number>>({});
+  const lastReadByGroupRef = useRef<Record<string, number>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
+  const unreadStorageKey = `accountabilibuddy_last_read_by_group_${currentUser.username.toLowerCase()}`;
 
   const betsById = useMemo(
     () => Object.fromEntries(bets.map((bet) => [bet.id, bet])) as Record<string, Bet>,
@@ -445,6 +455,65 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
     return dedupedMembers.map((name) => ({ name, initials: toInitials(name) }));
   }, [activeGroupData?.memberUsernames, currentUser.username]);
 
+  useEffect(() => {
+    lastReadByGroupRef.current = lastReadByGroup;
+  }, [lastReadByGroup]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(unreadStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (!parsed || typeof parsed !== "object") return;
+      const normalized = Object.fromEntries(
+        Object.entries(parsed)
+          .filter(([, value]) => typeof value === "number" && Number.isFinite(value))
+          .map(([groupId, value]) => [groupId, Number(value)]),
+      ) as Record<string, number>;
+      setLastReadByGroup(normalized);
+    } catch {
+      // ignore malformed local storage state
+    }
+  }, [unreadStorageKey]);
+
+  function persistLastRead(next: Record<string, number>): void {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(unreadStorageKey, JSON.stringify(next));
+  }
+
+  function markGroupRead(groupId: string, readAt: number): void {
+    if (!groupId) return;
+    setUnreadByGroup((prev) => ({ ...prev, [groupId]: 0 }));
+    setLastReadByGroup((prev) => {
+      const nextReadAt = Math.max(prev[groupId] ?? 0, readAt);
+      if (nextReadAt === (prev[groupId] ?? 0)) return prev;
+      const next = { ...prev, [groupId]: nextReadAt };
+      persistLastRead(next);
+      return next;
+    });
+  }
+
+  async function refreshUnreadCounts(nextGroups: Group[]): Promise<void> {
+    if (nextGroups.length === 0) {
+      setUnreadByGroup({});
+      return;
+    }
+    const unreadEntries = await Promise.all(nextGroups.map(async (group) => {
+      const { messages: groupMessages } = await getMessages(group.id);
+      const lastReadAt = lastReadByGroupRef.current[group.id] ?? 0;
+      const unread = groupMessages.filter((message) => {
+        const createdAt = typeof message.createdAt === "number" ? message.createdAt : 0;
+        const isOwnMessage = message.sender.toLowerCase() === currentUser.username.toLowerCase();
+        return createdAt > lastReadAt && !isOwnMessage;
+      }).length;
+      return [group.id, unread] as const;
+    }));
+    const nextUnreadByGroup = Object.fromEntries(unreadEntries) as Record<string, number>;
+    if (activeGroup) nextUnreadByGroup[activeGroup] = 0;
+    setUnreadByGroup(nextUnreadByGroup);
+  }
+
   async function refreshGroupsAndBets(): Promise<void> {
     const [groupsRes, betsRes] = await Promise.all([getGroups(), getBets()]);
     const nextGroups = groupsRes.groups;
@@ -458,11 +527,18 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
       setActiveGroup("");
       setMessages([]);
     }
+    void refreshUnreadCounts(nextGroups).catch(() => {});
   }
 
-  async function refreshMessages(groupId: string): Promise<void> {
-    const { messages } = await getMessages(groupId);
-    setMessages(messages);
+  async function refreshMessages(groupId: string, markRead = false): Promise<void> {
+    const { messages: nextMessages } = await getMessages(groupId);
+    setMessages(nextMessages);
+    if (!markRead) return;
+    const latestSeenAt = nextMessages.reduce(
+      (max, message) => Math.max(max, typeof message.createdAt === "number" ? message.createdAt : 0),
+      Date.now(),
+    );
+    markGroupRead(groupId, latestSeenAt);
   }
 
   useEffect(() => {
@@ -488,14 +564,20 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
 
   useEffect(() => {
     if (!activeGroup) return;
-    void refreshMessages(activeGroup).catch(() => {});
+    markGroupRead(activeGroup, Date.now());
+    void refreshMessages(activeGroup, true).catch(() => {});
     const interval = setInterval(() => {
-      void refreshMessages(activeGroup).catch(() => {});
+      void refreshMessages(activeGroup, true).catch(() => {});
     }, 2000);
     return () => {
       clearInterval(interval);
     };
   }, [activeGroup]);
+
+  useEffect(() => {
+    const totalUnread = Object.values(unreadByGroup).reduce((sum, count) => sum + count, 0);
+    onUnreadCountChange?.(totalUnread);
+  }, [unreadByGroup, onUnreadCountChange]);
 
   useEffect(() => {
     setShowCompletedBets(false);
@@ -511,11 +593,16 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
         text,
       });
       setInput("");
-      await refreshMessages(activeGroup);
+      await refreshMessages(activeGroup, true);
       void refreshGroupsAndBets();
     } finally {
       setSending(false);
     }
+  }
+
+  function handleSelectGroup(groupId: string): void {
+    setActiveGroup(groupId);
+    markGroupRead(groupId, Date.now());
   }
 
   function openInputDialog(dialog: Extract<ChatDialog, { type: "create-group" | "add-member" }>): void {
@@ -539,7 +626,7 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
         const { group } = await createGroup({ name: value });
         setActiveGroup(group.id);
         await refreshGroupsAndBets();
-        await refreshMessages(group.id);
+        await refreshMessages(group.id, true);
         setChatDialog(null);
         return;
       }
@@ -663,7 +750,7 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
       } : {}),
     })
       .then(async () => {
-        await refreshMessages(groupId);
+        await refreshMessages(groupId, true);
         await refreshGroupsAndBets();
       })
       .catch((err) => {
@@ -685,7 +772,7 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
           {groups.map((group) => (
             <button
               key={group.id}
-              onClick={() => setActiveGroup(group.id)}
+              onClick={() => handleSelectGroup(group.id)}
               className={`w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl text-left transition-all duration-150 ${
                 activeGroup === group.id ? "bg-primary/10" : "hover:bg-card"
               }`}
@@ -707,9 +794,19 @@ export function ChatView({ currentUser }: { currentUser: AuthUser }) {
                   >
                     {group.name}
                   </span>
-                  <Mono className="text-muted-foreground shrink-0" style={{ fontSize: "9px" } as React.CSSProperties}>
-                    {formatChatTime(group.updatedAt, group.time)}
-                  </Mono>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {unreadByGroup[group.id] > 0 && activeGroup !== group.id && (
+                      <span
+                        className="min-w-4 h-4 px-1 rounded-full flex items-center justify-center text-[9px] font-bold"
+                        style={{ background: "#FF4A4A", color: "#fff" }}
+                      >
+                        {unreadByGroup[group.id] > 99 ? "99+" : unreadByGroup[group.id]}
+                      </span>
+                    )}
+                    <Mono className="text-muted-foreground shrink-0" style={{ fontSize: "9px" } as React.CSSProperties}>
+                      {formatChatTime(group.updatedAt, group.time)}
+                    </Mono>
+                  </div>
                 </div>
                 <div className="flex items-center gap-1 mt-0.5">
                   <Users size={9} className="text-muted-foreground shrink-0" />
