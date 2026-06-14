@@ -114,7 +114,7 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [chatUnreadCount, setChatUnreadCount] = useState(0);
-  const [chatSelectionRequest, setChatSelectionRequest] = useState<{ groupId: string; token: number } | null>(null);
+  const [chatSelectionRequest, setChatSelectionRequest] = useState<{ groupId: string; betId: string; token: number } | null>(null);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [groupNotifications, setGroupNotifications] = useState<GroupNotification[]>([]);
   const [authForm, setAuthForm] = useState({
@@ -309,9 +309,10 @@ export default function App() {
     }
   }
 
-  function openBetInChat(groupId: string): void {
+  function openBetInChat(groupId: string, betId: string): void {
     setChatSelectionRequest((previous) => ({
       groupId,
+      betId,
       token: (previous?.token ?? 0) + 1,
     }));
     setActiveView("chat");
@@ -768,6 +769,7 @@ export default function App() {
                   currentUser={authUser}
                   onUnreadCountChange={setChatUnreadCount}
                   requestedGroupId={chatSelectionRequest?.groupId}
+                  requestedBetId={chatSelectionRequest?.betId}
                   requestedGroupToken={chatSelectionRequest?.token}
                 />
               )}

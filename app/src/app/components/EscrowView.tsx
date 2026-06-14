@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, ChevronRight, Clock, Shield } from "lucide-react";
 import { Card, Mono, Pill } from "./ui";
-import { getBets, getGroups, type Bet, type Group } from "../../lib/relayer";
+import { getBets, getGroups, getMessages, type Bet, type Group } from "../../lib/relayer";
 
 type EscrowViewProps = {
-  onOpenBetChat?: (groupId: string) => void;
+  onOpenBetChat?: (groupId: string, betId: string) => void;
 };
 
 function isAvailableBet(bet: Bet): boolean {
@@ -41,6 +41,7 @@ function statusPill(status: Bet["status"]): JSX.Element {
 export function EscrowView({ onOpenBetChat }: EscrowViewProps) {
   const [bets, setBets] = useState<Bet[]>([]);
   const [groupsById, setGroupsById] = useState<Record<string, Group>>({});
+  const [betGroupIdByBetId, setBetGroupIdByBetId] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
@@ -54,7 +55,22 @@ export function EscrowView({ onOpenBetChat }: EscrowViewProps) {
   async function refresh(): Promise<void> {
     const [betsRes, groupsRes] = await Promise.all([getBets(), getGroups()]);
     setBets(betsRes.bets);
-    setGroupsById(Object.fromEntries(groupsRes.groups.map((group) => [group.id, group])) as Record<string, Group>);
+    const groups = groupsRes.groups;
+    setGroupsById(Object.fromEntries(groups.map((group) => [group.id, group])) as Record<string, Group>);
+    const messagesByGroup = await Promise.all(groups.map(async (group) => {
+      const { messages } = await getMessages(group.id);
+      return { groupId: group.id, messages };
+    }));
+    const nextBetGroupIdByBetId: Record<string, string> = {};
+    for (const entry of messagesByGroup) {
+      for (const message of entry.messages) {
+        if (!message.betId) continue;
+        if (!nextBetGroupIdByBetId[message.betId]) {
+          nextBetGroupIdByBetId[message.betId] = entry.groupId;
+        }
+      }
+    }
+    setBetGroupIdByBetId(nextBetGroupIdByBetId);
   }
 
   useEffect(() => {
@@ -122,7 +138,7 @@ export function EscrowView({ onOpenBetChat }: EscrowViewProps) {
           {availableBets.length > 0 && (
             <div className="max-h-[540px] overflow-y-auto pr-1 space-y-2">
               {availableBets.map((bet) => {
-                const groupId = bet.groupId ?? "";
+                const groupId = bet.groupId ?? betGroupIdByBetId[bet.id] ?? "";
                 const group = groupId ? groupsById[groupId] : undefined;
                 const canOpenChat = Boolean(groupId);
                 return (
@@ -131,13 +147,13 @@ export function EscrowView({ onOpenBetChat }: EscrowViewProps) {
                     disabled={!canOpenChat}
                     onClick={() => {
                       if (!groupId) return;
-                      onOpenBetChat?.(groupId);
+                      onOpenBetChat?.(groupId, bet.id);
                     }}
-                    className="w-full text-left rounded-xl border border-border px-3 py-3 transition-colors disabled:cursor-not-allowed disabled:opacity-70 hover:bg-muted/40"
+                    className="group w-full text-left rounded-xl border border-border/80 bg-card/40 px-3 py-3 transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-70 hover:-translate-y-0.5 hover:border-[#9945FF]/45 hover:bg-[#9945FF]/10 hover:shadow-[0_0_0_1px_rgba(153,69,255,0.28),0_10px_28px_rgba(153,69,255,0.22)]"
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="text-foreground truncate" style={{ fontSize: "13px", fontWeight: 700 }}>
+                        <p className="text-foreground truncate transition-colors group-hover:text-[#D9C7FF]" style={{ fontSize: "13px", fontWeight: 700 }}>
                           {bet.terms}
                         </p>
                         <p className="text-muted-foreground mt-1 truncate" style={{ fontSize: "11px" }}>
@@ -150,7 +166,7 @@ export function EscrowView({ onOpenBetChat }: EscrowViewProps) {
                       <div className="flex items-center gap-2 shrink-0">
                         {statusPill(bet.status)}
                         {canOpenChat && (
-                          <span className="inline-flex items-center gap-1 text-[#14F195]" style={{ fontSize: "11px", fontWeight: 700 }}>
+                          <span className="inline-flex items-center gap-1 text-[#14F195] transition-transform duration-150 group-hover:translate-x-0.5" style={{ fontSize: "11px", fontWeight: 700 }}>
                             OPEN CHAT
                             <ChevronRight size={12} />
                           </span>

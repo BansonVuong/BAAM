@@ -397,11 +397,13 @@ export function ChatView({
   currentUser,
   onUnreadCountChange,
   requestedGroupId,
+  requestedBetId,
   requestedGroupToken,
 }: {
   currentUser: AuthUser;
   onUnreadCountChange?: (count: number) => void;
   requestedGroupId?: string;
+  requestedBetId?: string;
   requestedGroupToken?: number;
 }) {
   const [activeGroup, setActiveGroup] = useState<string>("");
@@ -422,9 +424,12 @@ export function ChatView({
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [unreadByGroup, setUnreadByGroup] = useState<Record<string, number>>({});
   const [lastReadByGroup, setLastReadByGroup] = useState<Record<string, number>>({});
+  const [highlightedBetId, setHighlightedBetId] = useState<string | null>(null);
   const activeGroupRef = useRef<string>("");
   const lastReadByGroupRef = useRef<Record<string, number>>({});
   const lastHandledGroupRequestTokenRef = useRef<number | undefined>(undefined);
+  const pendingRequestedBetIdRef = useRef<string | null>(null);
+  const messageListRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const unreadStorageKey = `accountabilibuddy_last_read_by_group_${currentUser.username.toLowerCase()}`;
 
@@ -587,6 +592,7 @@ export function ChatView({
   }, [activeGroup]);
   useEffect(() => {
     if (!activeGroup || typeof window === "undefined") return;
+    if (pendingRequestedBetIdRef.current) return;
     const frameId = window.requestAnimationFrame(() => {
       bottomRef.current?.scrollIntoView({ block: "end" });
     });
@@ -631,8 +637,38 @@ export function ChatView({
     if (lastHandledGroupRequestTokenRef.current === requestedGroupToken) return;
     if (!groups.some((group) => group.id === requestedGroupId)) return;
     lastHandledGroupRequestTokenRef.current = requestedGroupToken;
+    pendingRequestedBetIdRef.current = requestedBetId ?? null;
     handleSelectGroup(requestedGroupId);
-  }, [requestedGroupId, requestedGroupToken, groups]);
+  }, [requestedGroupId, requestedBetId, requestedGroupToken, groups]);
+
+  useEffect(() => {
+    if (!activeGroup || typeof window === "undefined") return;
+    const targetBetId = pendingRequestedBetIdRef.current;
+    if (!targetBetId) return;
+    if (!messages.some((message) => message.betId === targetBetId)) {
+      pendingRequestedBetIdRef.current = null;
+      const frameId = window.requestAnimationFrame(() => {
+        bottomRef.current?.scrollIntoView({ block: "end" });
+      });
+      return () => {
+        window.cancelAnimationFrame(frameId);
+      };
+    }
+    const targetNode = messageListRef.current?.querySelector<HTMLElement>(`[data-bet-id="${targetBetId}"]`);
+    if (!targetNode) return;
+    const frameId = window.requestAnimationFrame(() => {
+      targetNode.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+    pendingRequestedBetIdRef.current = null;
+    setHighlightedBetId(targetBetId);
+    const timeoutId = window.setTimeout(() => {
+      setHighlightedBetId((current) => (current === targetBetId ? null : current));
+    }, 1800);
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.clearTimeout(timeoutId);
+    };
+  }, [activeGroup, messages]);
 
   function openInputDialog(dialog: Extract<ChatDialog, { type: "create-group" | "add-member" }>): void {
     setDialogInput("");
@@ -966,7 +1002,7 @@ export function ChatView({
           )}
         </AnimatePresence>
 
-        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+        <div ref={messageListRef} className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
           {!activeGroup && (
             <div className="h-full flex items-center justify-center">
               <Mono className="text-muted-foreground" style={{ fontSize: "11px" } as React.CSSProperties}>
@@ -978,6 +1014,10 @@ export function ChatView({
             {messages.map((message, idx) => (
               <motion.div
                 key={message.id}
+                data-bet-id={message.betId ?? undefined}
+                className={message.betId && highlightedBetId === message.betId
+                  ? "rounded-xl ring-2 ring-primary/40 bg-primary/5 p-2"
+                  : undefined}
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.18, delay: idx < 6 ? idx * 0.03 : 0 }}
