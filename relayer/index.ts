@@ -1030,6 +1030,60 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    // POST /groups/:id/leave  — remove the authenticated user from a group
+    const groupLeavePathId = req.url ? decodeGroupLeavePathId(req.url) : null;
+    if (req.method === "POST" && groupLeavePathId) {
+      const authUser = await getAuthenticatedUser(req);
+      if (!authUser) return json(res, 401, { error: "unauthorized" });
+      const groupsCol = await groups();
+      if (!groupsCol) return dbUnconfigured(res);
+
+      const group = await groupsCol.findOne(
+        { id: groupLeavePathId },
+        { projection: { _id: 0 } },
+      );
+      if (!group) {
+        return json(res, 404, { error: "group not found" });
+      }
+
+      const currentMemberUsernames = Array.isArray(group.memberUsernames)
+        ? group.memberUsernames.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        : [];
+      const nextMemberUsernames = currentMemberUsernames.filter(
+        (value) => value.toLowerCase() !== authUser.usernameLower,
+      );
+      if (nextMemberUsernames.length === currentMemberUsernames.length) {
+        return json(res, 403, { error: "group membership required" });
+      }
+
+      const now = Date.now();
+      const nowLabel = formatChatClock(now);
+      await groupsCol.updateOne(
+        { id: groupLeavePathId },
+        {
+          $set: {
+            memberUsernames: nextMemberUsernames,
+            members: nextMemberUsernames.length,
+            lastMsg: `${authUser.username} left the group`,
+            time: nowLabel,
+            updatedAt: now,
+          },
+        },
+      );
+
+      const updatedGroup = await groupsCol.findOne(
+        { id: groupLeavePathId },
+        { projection: { _id: 0 } },
+      );
+      if (!updatedGroup) {
+        return json(res, 500, { error: "failed to update group members" });
+      }
+      return json(res, 200, {
+        group: updatedGroup,
+        leftUsername: authUser.username,
+      });
+    }
+
     // GET /messages?group=1  — messages for a group (chronological)
     if (req.method === "GET" && req.url?.startsWith("/messages")) {
       const authUser = await getAuthenticatedUser(req);
@@ -2161,6 +2215,13 @@ function decodeIMessageConversationPath(url: string): { id: string; join: boolea
 function decodeGroupMembersPathId(url: string): string | null {
   const path = url.split("?")[0] ?? "";
   const match = /^\/groups\/([^/]+)\/members$/.exec(path);
+  if (!match?.[1]) return null;
+  return decodeURIComponent(match[1]);
+}
+
+function decodeGroupLeavePathId(url: string): string | null {
+  const path = url.split("?")[0] ?? "";
+  const match = /^\/groups\/([^/]+)\/leave$/.exec(path);
   if (!match?.[1]) return null;
   return decodeURIComponent(match[1]);
 }

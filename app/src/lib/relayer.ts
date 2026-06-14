@@ -345,6 +345,13 @@ export function addGroupMemberByUsername(
   });
 }
 
+/** Leave a group chat as the authenticated user. */
+export function leaveGroup(groupId: string): Promise<{ group: Group; leftUsername: string }> {
+  return req(`/groups/${encodeURIComponent(groupId)}/leave`, {
+    method: "POST",
+  });
+}
+
 /** Messages for a group, chronological. */
 export function getMessages(groupId: string): Promise<{ messages: ChatMessage[] }> {
   return req(`/messages?group=${encodeURIComponent(groupId)}`);

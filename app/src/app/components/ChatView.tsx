@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "motion/react";
 import {
   Send, Paperclip, Hash, Users, AlertTriangle, Smile, Plus,
   CheckCircle2, Clock, UserPlus, ChevronRight, Zap, Shield, AlertCircle,
-  Lock, ExternalLink,
+  Lock, ExternalLink, LogOut,
 } from "lucide-react";
 import { Avatar, Pill, Mono } from "./ui";
 import { Button } from "./ui/button";
@@ -26,6 +26,7 @@ import {
   getBets,
   getGroups,
   getMessages,
+  leaveGroup,
   postMessage,
   voteBet,
   type AuthUser,
@@ -39,6 +40,7 @@ type Msg = ChatMessage;
 type ChatDialog =
   | { type: "create-group" }
   | { type: "add-member"; groupName: string }
+  | { type: "confirm-leave"; groupId: string; groupName: string }
   | { type: "confirm-accept"; betId: string; challenger: string; stake: string; currency: string }
   | { type: "confirm-vote"; betId: string; votedFor: BetVoteChoice; candidateName: string; isChange: boolean }
   | { type: "result"; title: string; description: string; tone: "success" | "error" };
@@ -780,6 +782,16 @@ export function ChatView({
     });
   }
 
+  function handleLeaveGroup(): void {
+    if (!activeGroupData) return;
+    setDialogError(null);
+    setChatDialog({
+      type: "confirm-leave",
+      groupId: activeGroupData.id,
+      groupName: activeGroupData.name,
+    });
+  }
+
   async function submitAccept(dialog: Extract<ChatDialog, { type: "confirm-accept" }>): Promise<void> {
     setAcceptingByBetId((prev) => ({ ...prev, [dialog.betId]: true }));
     setDialogBusy(true);
@@ -824,6 +836,19 @@ export function ChatView({
         delete next[dialog.betId];
         return next;
       });
+    }
+  }
+
+  async function submitLeaveGroup(dialog: Extract<ChatDialog, { type: "confirm-leave" }>): Promise<void> {
+    setDialogBusy(true);
+    try {
+      await leaveGroup(dialog.groupId);
+      await refreshGroupsAndBets();
+      showResult("Left group", `You left ${dialog.groupName}.`, "success");
+    } catch (err) {
+      showResult("Unable to leave group", err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setDialogBusy(false);
     }
   }
 
@@ -998,6 +1023,15 @@ export function ChatView({
             >
               <UserPlus size={12} />
               Add user
+            </button>
+            <button
+              onClick={handleLeaveGroup}
+              disabled={!activeGroupData}
+              className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ fontSize: "11px" }}
+            >
+              <LogOut size={12} />
+              Leave
             </button>
             {activeGroupData && (
               <Pill color={unresolvedBetCount > 0 ? "amber" : "muted"}>
@@ -1183,6 +1217,7 @@ export function ChatView({
                 <DialogHeader className="pr-6">
                   <div className="mb-1 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
                     {chatDialog.type === "add-member" ? <UserPlus size={18} /> :
+                      chatDialog.type === "confirm-leave" ? <LogOut size={18} /> :
                       chatDialog.type === "confirm-accept" ? <CheckCircle2 size={18} /> :
                       chatDialog.type === "confirm-vote" ? <Shield size={18} /> :
                         chatDialog.type === "result" && chatDialog.tone === "error" ? <AlertCircle size={18} /> :
@@ -1191,6 +1226,7 @@ export function ChatView({
                   <DialogTitle className="text-foreground">
                     {chatDialog.type === "create-group" ? "Create a group" :
                       chatDialog.type === "add-member" ? "Add a member" :
+                        chatDialog.type === "confirm-leave" ? "Leave this group?" :
                         chatDialog.type === "confirm-accept" ? "Accept this challenge?" :
                         chatDialog.type === "confirm-vote" ? (chatDialog.isChange ? "Change your vote?" : "Confirm your vote") :
                           chatDialog.title}
@@ -1198,6 +1234,7 @@ export function ChatView({
                   <DialogDescription>
                     {chatDialog.type === "create-group" ? "Start a private chat. Only members you add will be able to see it." :
                       chatDialog.type === "add-member" ? `Invite a registered user to ${chatDialog.groupName}.` :
+                        chatDialog.type === "confirm-leave" ? `You will lose access to ${chatDialog.groupName} and its chat history until someone adds you back.` :
                         chatDialog.type === "confirm-accept" ? `Accept ${chatDialog.challenger}'s challenge and commit ${chatDialog.stake} ${chatDialog.currency}.` :
                         chatDialog.type === "confirm-vote" ? `Submit your vote for ${chatDialog.candidateName}. This may resolve the bet once quorum is reached.` :
                           chatDialog.description}
@@ -1255,6 +1292,21 @@ export function ChatView({
                     </Button>
                     <Button onClick={() => { void submitAccept(chatDialog); }} disabled={dialogBusy}>
                       {dialogBusy ? "Accepting..." : "Accept challenge"}
+                    </Button>
+                  </DialogFooter>
+                )}
+
+                {chatDialog.type === "confirm-leave" && (
+                  <DialogFooter className="mt-6">
+                    <Button variant="outline" onClick={() => setChatDialog(null)} disabled={dialogBusy}>
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      onClick={() => { void submitLeaveGroup(chatDialog); }}
+                      disabled={dialogBusy}
+                    >
+                      {dialogBusy ? "Leaving..." : "Leave group"}
                     </Button>
                   </DialogFooter>
                 )}
