@@ -33,9 +33,9 @@ const NAV: {
   label:    string;
   sublabel: string;
   Icon:     React.FC<{ size?: number; className?: string }>;
-  badge?:   string;
+  badge?:   string | undefined;
 }[] = [
-  { id:"chat",        label:"Group Chat",   sublabel:"Lobby & Bets",     Icon:MessageSquare, badge:"2" },
+  { id:"chat",        label:"Group Chat",   sublabel:"Lobby & Bets",     Icon:MessageSquare },
   { id:"escrow",      label:"Escrow Card",  sublabel:"P2P Wager Mode",   Icon:Shield },
   { id:"git",         label:"Dev Bet",      sublabel:"AI Git Inspector", Icon:GitBranch },
   { id:"leaderboard", label:"Leaderboard",  sublabel:"Rankings & Stats", Icon:BarChart3 },
@@ -104,6 +104,7 @@ export default function App() {
   const [authMode, setAuthMode] = useState<"signup" | "login">("signup");
   const [authError, setAuthError] = useState<string | null>(null);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [chatUnreadCount, setChatUnreadCount] = useState(0);
   const [authForm, setAuthForm] = useState({
     email: "",
     username: "",
@@ -139,7 +140,14 @@ export default function App() {
     return () => { alive = false; };
   }, []);
 
-  const activeNav = NAV.find(n => n.id === activeView)!;
+  const nav = NAV.map((item) => {
+    if (item.id !== "chat") return item;
+    return {
+      ...item,
+      badge: chatUnreadCount > 0 ? String(chatUnreadCount > 99 ? "99+" : chatUnreadCount) : undefined,
+    };
+  });
+  const activeNav = nav.find((n) => n.id === activeView)!;
 
   async function submitAuth(event: React.FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -334,7 +342,7 @@ export default function App() {
             className="flex items-center gap-0.5 p-0.5 rounded-xl border border-border"
             style={{ background: "var(--muted)" }}
           >
-            {NAV.map(({ id, label, Icon, badge }) => {
+            {nav.map(({ id, label, Icon, badge }) => {
               const active = activeView === id;
               return (
                 <button
@@ -529,7 +537,7 @@ export default function App() {
                 minHeight: activeView === "chat" ? "520px" : undefined,
               }}
             >
-              {activeView === "chat"        && <ChatView currentUser={authUser} />}
+              {activeView === "chat"        && <ChatView currentUser={authUser} onUnreadCountChange={setChatUnreadCount} />}
               {activeView === "escrow"      && <EscrowView />}
               {activeView === "git"         && <GitView />}
               {activeView === "leaderboard" && <LeaderboardView />}
