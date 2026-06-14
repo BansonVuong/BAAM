@@ -16,6 +16,10 @@ if [[ "$deployed" == "$incoming" ]]; then
 fi
 
 if [[ "$current" != "$incoming" ]]; then
+  # Discard any local modifications to tracked files (e.g. lockfile churn from
+  # a previous build) so the fast-forward merge is not blocked by a dirty tree.
+  # ff-only still refuses rewritten history, so this only ever drops local edits.
+  runuser -u accountabilibuddy -- git reset --quiet --hard HEAD
   runuser -u accountabilibuddy -- git merge --ff-only "origin/$branch"
 fi
 runuser -u accountabilibuddy -- npm ci
