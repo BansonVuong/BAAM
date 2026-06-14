@@ -1,5 +1,5 @@
 66.42.115.38.nip.io {
-	@api path /health /auth/* /profile /verify /scoreboard /game /sports-bets /settle-bet /groups /groups/* /messages /bets /bets/* /leaderboard /profiles /profiles/*
+	@api path /health /auth/* /profile /verify /scoreboard /game /sports-bets /settle-bet /imessage/* /groups /groups/* /messages /bets /bets/* /leaderboard /profiles /profiles/*
 
 	handle @api {
 		reverse_proxy 127.0.0.1:8787
