@@ -1,5 +1,7 @@
 # BAAM
 
+<video src="./assets/baamimsg.webm" controls></video>
+
 ## Environments
 
 Local development and production run independently:
