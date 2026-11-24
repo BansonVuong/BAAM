@@ -16,6 +16,7 @@ import {
   getGroups,
   getLeaderboard,
   getMessages,
+  DISCORD_ENABLED,
   getProfiles,
   type AuthUser,
   type Bet,
@@ -379,7 +380,7 @@ export function LeaderboardView({ currentUser = null }: { currentUser?: AuthUser
           initials: "AB",
           members: 0,
           pendingBet: false,
-          lastMsg: "Discord and web bets",
+          lastMsg: DISCORD_ENABLED ? "Discord and web bets" : "All BAAM bets",
           time: "",
         }, ...discordGroups, ...groupsResult.value.groups];
         setGroups(nextGroups);

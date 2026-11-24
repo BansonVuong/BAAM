@@ -128,6 +128,9 @@ export function getCurrentAuthUser(): Promise<{ user: AuthUser }> {
   return req<{ user: AuthUser }>("/auth/me");
 }
 
+/** Discord integration is paused unless the build sets VITE_DISCORD_ENABLED=true. */
+export const DISCORD_ENABLED = import.meta.env.VITE_DISCORD_ENABLED === "true";
+
 export interface DiscordLinkResult {
   linked: boolean;
   username: string;

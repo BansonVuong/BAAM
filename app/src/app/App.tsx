@@ -17,6 +17,7 @@ import {
   getGroups,
   getProfileSummary,
   linkDiscord,
+  DISCORD_ENABLED,
   loginWithEmail,
   signupWithEmail,
   type AuthUser,
@@ -142,7 +143,8 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const code = params.get("discord_link");
     if (!code) return;
-    setDiscordLinkCode(code);
+    // Strip stale links even while Discord is disabled, but don't act on them.
+    if (DISCORD_ENABLED) setDiscordLinkCode(code);
     params.delete("discord_link");
     const query = params.toString();
     window.history.replaceState(

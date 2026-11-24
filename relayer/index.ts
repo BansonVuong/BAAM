@@ -14,7 +14,8 @@
 //   AUTH_SESSION_TTL_MS session lifetime in milliseconds (default 30 days)
 //   MONGODB_URI       Mongo connection string (optional; enables data routes)
 //   MONGODB_DB        Mongo database name     (default "accountabilibuddy")
-//   DISCORD_BOT_TOKEN        Discord bot token (optional; enables Discord bot)
+//   DISCORD_ENABLED          "true" to enable the Discord integration (default off)
+//   DISCORD_BOT_TOKEN        Discord bot token (needed when DISCORD_ENABLED=true)
 //   DISCORD_APPLICATION_ID   Discord app/client ID (for slash command registration)
 //   WEB_BASE_URL             Public URL of the web app (for Discord embed links)
 
@@ -47,6 +48,10 @@ const PROFILE_INITIALS = process.env.PROFILE_INITIALS ?? "ME";
 const PROFILE_GITHUB   = process.env.PROFILE_GITHUB ?? "me";
 const AUTH_SECRET = process.env.AUTH_SECRET ?? "dev-only-insecure-auth-secret";
 const AUTH_SESSION_TTL_MS = Number(process.env.AUTH_SESSION_TTL_MS ?? 1000 * 60 * 60 * 24 * 30);
+// The Discord integration is paused: the bot, /discord/* routes, new Discord bets and
+// per-server leaderboards stay off unless explicitly enabled. Existing Discord bets
+// still settle and still count toward overall standings.
+const DISCORD_ENABLED = process.env.DISCORD_ENABLED === "true";
 
 // Custodial wallets + on-chain SOL bets.
 //   WALLET_SECRET_KEY      encryption key for stored wallet secrets (falls back to AUTH_SECRET)
@@ -1064,6 +1069,10 @@ const server = http.createServer(async (req, res) => {
 
     // ── Discord REST routes ───────────────────────────────────────────────────
 
+    if (!DISCORD_ENABLED && req.url?.startsWith("/discord/")) {
+      return json(res, 404, { error: "Discord integration is disabled" });
+    }
+
     // GET /discord/me  — resolve which AccountabiliBuddy user is linked to a Discord id
     // Query param: discordId=<snowflake>
     if (req.method === "GET" && req.url?.startsWith("/discord/me")) {
@@ -1416,6 +1425,9 @@ const server = http.createServer(async (req, res) => {
       let awayTeam = isSports ? `${body.awayTeam ?? ""}`.trim() : undefined;
       let sportsKickoffSec: number | null = null;
 
+      if (isDiscord && !DISCORD_ENABLED) {
+        return json(res, 400, { error: "Discord integration is disabled" });
+      }
       if (!isIMessage && !isDiscord && !groupId) return json(res, 400, { error: "groupId is required" });
       if (!type) return json(res, 400, { error: "type must be PERSONAL or DEV" });
       if (type === "DEV" && !isSports) {
@@ -2022,6 +2034,9 @@ const server = http.createServer(async (req, res) => {
       ]);
       const conversationById = new Map(discordConversationDocs.map((conversation) => [conversation.id, conversation]));
       const guildId = new URL(req.url, "http://x").searchParams.get("discordGuildId")?.trim() ?? "";
+      if (guildId && !DISCORD_ENABLED) {
+        return json(res, 404, { error: "Discord integration is disabled" });
+      }
       const isAuthParticipant = (bet: BetDoc): boolean => [
         bet.challenger,
         bet.acceptor,
@@ -2050,7 +2065,7 @@ const server = http.createServer(async (req, res) => {
         ))
         : discordBetDocs;
       const leaderboardBets = guildId ? selectedDiscordBets : [...webBetDocs, ...discordBetDocs];
-      const discordServers = [...visibleGuildIds].map((visibleGuildId) => {
+      const discordServers = (DISCORD_ENABLED ? [...visibleGuildIds] : []).map((visibleGuildId) => {
         const conversations = discordConversationDocs.filter((conversation) => conversation.guildId === visibleGuildId);
         const memberUsernames = new Set(conversations.flatMap((conversation) => conversation.memberUsernames));
         for (const bet of discordBetDocs) {
@@ -2167,8 +2182,13 @@ server.listen(PORT, HOST, () => {
 setInterval(() => void runPoll(), POLL_INTERVAL);
 void runPoll();
 
-// Start the Discord bot (no-ops gracefully when DISCORD_BOT_TOKEN is unset).
-void startDiscordBot().catch((err) => console.error("Discord bot failed to start:", err));
+// Start the Discord bot only when the integration is enabled (it also no-ops
+// gracefully when DISCORD_BOT_TOKEN is unset).
+if (DISCORD_ENABLED) {
+  void startDiscordBot().catch((err) => console.error("Discord bot failed to start:", err));
+} else {
+  console.log("Discord integration disabled (set DISCORD_ENABLED=true to enable)");
+}
 
 async function runPoll(): Promise<void> {
   try {
