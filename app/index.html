@@ -1,22 +1,18 @@
-
-  <!DOCTYPE html>
-  <html lang="en">
-    <head>
-      
-      <meta charset="UTF-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <title>Design Social Prediction Dashboard</title>
-      <meta name="description" content="Enables social groups to create, manage, and track peer-to-peer accountability bets with real-time chat, escrow, AI code audits, and leaderboards." />
-      <meta name="robots" content="noindex, nofollow" />
-      <style>html, body { height: 100%; margin: 0; } #root { height: 100%; }</style>
-      
-    </head>
-
-    <body>
-      
-      <div id="root"></div>
-      <script type="module" src="/src/main.tsx"></script>
-      
-    </body>
-  </html>
-  
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>BAAM</title>
+    <meta name="description" content="Bet your friends in the group chat. Friends witness it, the winner gets paid." />
+    <meta name="robots" content="noindex, nofollow" />
+    <script>
+      // Apply the saved theme before first paint so dark mode doesn't flash light.
+      try { if (localStorage.getItem("BAAM_theme") === "dark") document.documentElement.classList.add("dark"); } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
