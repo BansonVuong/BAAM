@@ -23,7 +23,7 @@ type Pending =
  * actionable tickets uses this so the flows behave the same everywhere.
  */
 export function useBetActions(): { handlers: BetActionHandlers; dialogs: ReactNode } {
-  const { user, upsertBet, refresh, bets } = useBaamData();
+  const { user, upsertBet, refresh, refreshPoints, bets, openDetails, openProofSheet, openProfile } = useBaamData();
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +45,11 @@ export function useBetActions(): { handlers: BetActionHandlers; dialogs: ReactNo
     },
     isAccepting: (betId) => Boolean(accepting[betId]),
     isVoting: (betId) => Boolean(voting[betId]),
-  }), [accepting, voting, user.username]);
+    addProof: (bet) => openProofSheet(bet.id, "proof"),
+    checkIn: (bet) => openProofSheet(bet.id, "checkin"),
+    openDetails: (bet, focus) => openDetails(bet.id, focus),
+    openPerson: openProfile,
+  }), [accepting, voting, user.username, openDetails, openProofSheet, openProfile]);
 
   const close = useCallback(() => {
     if (busy) return;
@@ -65,6 +69,7 @@ export function useBetActions(): { handlers: BetActionHandlers; dialogs: ReactNo
         upsertBet(bet);
         setPending(null);
         void refresh();
+        void refreshPoints();
       } catch (err) {
         setError(friendlyError(err, "Couldn't accept this bet. Try again."));
       } finally {

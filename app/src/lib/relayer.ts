@@ -158,6 +158,10 @@ export interface ProfileSummary {
   wallet: string;
   /** SOL balance of the account wallet. */
   solBalance: number;
+  /** Points balance of the signed-in user (null when signed out or unavailable). */
+  pointsBalance?: number | null;
+  /** What POST /bets accepts; `default` applies when `currency` is omitted. */
+  betCurrencies?: { allowed: BetCurrency[]; default: BetCurrency };
 }
 /** Profile details plus current SOL balance for the configured profile wallet. */
 export function getProfileSummary(): Promise<ProfileSummary> {
@@ -412,7 +416,8 @@ export function createBet(input: {
   acceptor: string;
   terms: string;
   stake: string;
-  currency: "SOL";
+  /** PTS stakes are whole numbers ≥ 1 and can't use a charity fallback. */
+  currency: BetCurrency;
   witnesses?: number;
   minBettors?: number;
   /** Witness (non-sports) bets: unix-ms deadline after which the unresolved fallback fires. */
@@ -719,7 +724,10 @@ export interface Bet {
 
 /** Absolute URL for a proof image (works in `<img src>`; the path carries a short-lived signature). */
 export function proofImageUrl(proof: ProofSummary): string | null {
-  return proof.image ? `${RELAYER_URL}${proof.image.url}` : null;
+  if (!proof.image) return null;
+  // Already absolute (or a local preview): use it as is.
+  if (/^(https?:|data:|blob:)/.test(proof.image.url)) return proof.image.url;
+  return `${RELAYER_URL}${proof.image.url}`;
 }
 
 /** One bet with proofs + check-in progress (participants and chat members only). */

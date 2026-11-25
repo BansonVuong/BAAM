@@ -12,9 +12,13 @@ import {
   getBets,
   getGroups,
   getMessages,
+  getPoints,
+  getProfileSummary,
   type AuthUser,
   type Bet,
+  type BetCurrency,
   type Group,
+  type PointsSummary,
 } from "../lib/relayer";
 import {
   countUnreadGroupNotifications,
@@ -48,6 +52,26 @@ interface BaamData {
   notifications: GroupNotification[];
   unreadNotifications: number;
   markNotificationsRead: () => void;
+  /** Bet currencies the server allows (from GET /profile). Null until loaded. */
+  currencies: { allowed: BetCurrency[]; default: BetCurrency } | null;
+  /** True when SOL bets are enabled on this server. */
+  solEnabled: boolean;
+  pointsEnabled: boolean;
+  points: PointsSummary | null;
+  refreshPoints: () => Promise<void>;
+  setPoints: (summary: PointsSummary) => void;
+  /** Person whose record sheet is open. */
+  profileName: string | null;
+  openProfile: (username: string) => void;
+  closeProfile: () => void;
+  /** Bet whose full-ticket sheet is open (proof gallery, day strip, check-in reviews). */
+  details: { betId: string; focus?: "review" } | null;
+  openDetails: (betId: string, focus?: "review") => void;
+  closeDetails: () => void;
+  /** Bet whose "Add proof" / "Check in" sheet is open. */
+  proofTarget: { betId: string; mode: "proof" | "checkin" } | null;
+  openProofSheet: (betId: string, mode: "proof" | "checkin") => void;
+  closeProofSheet: () => void;
 }
 
 const DataContext = createContext<BaamData | null>(null);
@@ -111,6 +135,35 @@ export function DataProvider({ user, children }: { user: AuthUser; children: Rea
   const seenGroupIdsRef = useRef<Set<string>>(new Set(parseStoredStringArray(readJson(seenGroupsKey))));
   const restoredNotificationCountRef = useRef(notifications.length);
   const aliveRef = useRef(true);
+  const [currencies, setCurrencies] = useState<BaamData["currencies"]>(null);
+  const [points, setPoints] = useState<PointsSummary | null>(null);
+  const [profileName, setProfileName] = useState<string | null>(null);
+  const [details, setDetails] = useState<BaamData["details"]>(null);
+  const [proofTarget, setProofTarget] = useState<BaamData["proofTarget"]>(null);
+  const openDetails = useCallback((betId: string, focus?: "review") => setDetails({ betId, focus }), []);
+  const closeDetails = useCallback(() => setDetails(null), []);
+  const openProofSheet = useCallback((betId: string, mode: "proof" | "checkin") => setProofTarget({ betId, mode }), []);
+  const closeProofSheet = useCallback(() => setProofTarget(null), []);
+
+  const refreshPoints = useCallback(async () => {
+    try {
+      const { points: next } = await getPoints(30);
+      if (!aliveRef.current) return;
+      setPoints(next);
+      setCurrencies((prev) => prev ?? next.betCurrencies);
+    } catch {
+      // Points are optional; the menu shows "Balance unavailable".
+    }
+  }, []);
+
+  useEffect(() => {
+    getProfileSummary()
+      .then((profile) => { if (aliveRef.current && profile.betCurrencies) setCurrencies(profile.betCurrencies); })
+      .catch(() => {});
+    void refreshPoints();
+    const interval = window.setInterval(() => { void refreshPoints(); }, 20_000);
+    return () => window.clearInterval(interval);
+  }, [refreshPoints]);
 
   const markGroupRead = useCallback((groupId: string, readAt = Date.now()) => {
     if (!groupId) return;
@@ -217,6 +270,14 @@ export function DataProvider({ user, children }: { user: AuthUser; children: Rea
     return map;
   }, [bets, betGroupIdsFromMessages]);
 
+  const openProfile = useCallback((name: string) => {
+    const clean = name.trim().replace(/^@/, "");
+    if (clean && clean.toLowerCase() !== "anyone") setProfileName(clean);
+  }, []);
+  const closeProfile = useCallback(() => setProfileName(null), []);
+  const solEnabled = currencies ? currencies.allowed.includes("SOL") : true;
+  const pointsEnabled = currencies ? currencies.allowed.includes("PTS") : false;
+
   const value = useMemo<BaamData>(() => ({
     user,
     groups,
@@ -234,9 +295,26 @@ export function DataProvider({ user, children }: { user: AuthUser; children: Rea
     notifications: [...notifications].sort((a, b) => b.createdAt - a.createdAt),
     unreadNotifications: countUnreadGroupNotifications(notifications),
     markNotificationsRead,
+    currencies,
+    solEnabled,
+    pointsEnabled,
+    points,
+    refreshPoints,
+    setPoints,
+    profileName,
+    openProfile,
+    closeProfile,
+    details,
+    openDetails,
+    closeDetails,
+    proofTarget,
+    openProofSheet,
+    closeProofSheet,
   }), [
     user, groups, bets, loaded, error, betGroupIds, unreadByGroup, setOpenGroupId, markGroupRead,
     refresh, upsertBet, upsertGroup, notifications, markNotificationsRead,
+    currencies, solEnabled, pointsEnabled, points, refreshPoints, profileName, openProfile, closeProfile,
+    details, openDetails, closeDetails, proofTarget, openProofSheet, closeProofSheet,
   ]);
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;

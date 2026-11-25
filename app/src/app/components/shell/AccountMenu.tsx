@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Bell, Copy, Info, LogOut, Moon, Sun } from "lucide-react";
+import { Bell, Coins, Copy, Info, LogOut, Moon, Sun, Trophy } from "lucide-react";
+import { PointsSheet } from "./PointsSheet";
 import { getProfileSummary, RELAYER_URL, type ProfileSummary } from "../../../lib/relayer";
 import { useRelayerHealth } from "../../../lib/useRelayer";
 import { formatAmount } from "../../../lib/bets";
@@ -76,8 +77,9 @@ export function AccountMenu({
   /** Avatar only (mobile header) instead of avatar + name (desktop rail). */
   compact?: boolean;
 }) {
-  const { user } = useBaamData();
+  const { user, points, pointsEnabled, solEnabled, refreshPoints, openProfile } = useBaamData();
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [pointsOpen, setPointsOpen] = useState(false);
   const [profile, setProfile] = useState<ProfileSummary | null>(null);
   const [profileFailed, setProfileFailed] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -108,7 +110,7 @@ export function AccountMenu({
 
   return (
     <>
-      <MenuRoot onOpenChange={(open) => { if (open) loadProfile(); }}>
+      <MenuRoot onOpenChange={(open) => { if (open) { loadProfile(); void refreshPoints(); } }}>
         <MenuTrigger
           className={cn(
             compact
@@ -129,18 +131,39 @@ export function AccountMenu({
           <div className="px-3 pb-2 pt-2">
             <p className="text-label font-semibold">{profile?.name ?? user.username}</p>
             <p className="truncate text-meta text-ink-soft">{user.email}</p>
-            <p className="mt-2 text-label">
-              {profile
-                ? <><span className="font-extrabold wdth-condensed text-[22px] tabular-nums">{formatAmount(profile.solBalance, "SOL")}</span> SOL in your wallet</>
-                : profileFailed ? <span className="text-ink-soft">Balance unavailable</span>
-                : <span className="text-ink-soft">Loading balance…</span>}
-            </p>
+            {pointsEnabled && (
+              <p className="mt-2 text-label">
+                {points
+                  ? <><span className="font-extrabold wdth-condensed text-[22px] tabular-nums">{points.balance.toLocaleString()}</span> pts</>
+                  : <span className="text-ink-soft">Loading points…</span>}
+              </p>
+            )}
+            {solEnabled && (
+              <p className={pointsEnabled ? "text-label" : "mt-2 text-label"}>
+                {profile
+                  ? <><span className="font-extrabold wdth-condensed text-[22px] tabular-nums">{formatAmount(profile.solBalance, "SOL")}</span> SOL in your wallet</>
+                  : profileFailed ? <span className="text-ink-soft">SOL balance unavailable</span>
+                  : <span className="text-ink-soft">Loading balance…</span>}
+              </p>
+            )}
           </div>
           <MenuSeparator />
-          <MenuItem onSelect={(event) => { void copyWallet(event); }} disabled={!profile?.wallet}>
-            <Copy size={18} aria-hidden />
-            {copied ? "Copied" : "Copy wallet address"}
+          {pointsEnabled && (
+            <MenuItem onSelect={() => setPointsOpen(true)}>
+              <Coins size={18} aria-hidden />
+              Points
+            </MenuItem>
+          )}
+          <MenuItem onSelect={() => openProfile(user.username)}>
+            <Trophy size={18} aria-hidden />
+            Your record
           </MenuItem>
+          {solEnabled && (
+            <MenuItem onSelect={(event) => { void copyWallet(event); }} disabled={!profile?.wallet}>
+              <Copy size={18} aria-hidden />
+              {copied ? "Copied" : "Copy wallet address"}
+            </MenuItem>
+          )}
           <MenuItem onSelect={(event) => { event.preventDefault(); onToggleTheme(); }}>
             {theme === "dark" ? <Sun size={18} aria-hidden /> : <Moon size={18} aria-hidden />}
             {theme === "dark" ? "Light mode" : "Dark mode"}
@@ -159,6 +182,7 @@ export function AccountMenu({
       <Sheet open={aboutOpen} onOpenChange={setAboutOpen} size="sm" title="About BAAM">
         {aboutOpen && <AboutDetails />}
       </Sheet>
+      <PointsSheet open={pointsOpen} onOpenChange={setPointsOpen} />
     </>
   );
 }

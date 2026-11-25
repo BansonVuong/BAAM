@@ -107,8 +107,14 @@ export function canAcceptBet(bet: Bet, viewer: string, now = Date.now()): boolea
   return isOpenChallenge(bet) || sameName(bet.acceptor, viewer);
 }
 
+/** Recurring check-in bet: decided by reviewed check-ins, never by votes. */
+export function isScheduledBet(bet: Bet): boolean {
+  return Boolean(bet.schedule);
+}
+
 export function canVoteOnBet(bet: Bet, viewer: string, now = Date.now()): boolean {
-  if (bet.validation === "sports") return false;
+  if (bet.validation === "sports" || isScheduledBet(bet)) return false;
+  if (bet.viewerActions && !bet.viewerActions.canVote) return false;
   if (bet.status !== "ACTIVE" || isBetCompleted(bet)) return false;
   if (isBetParticipant(bet, viewer)) return false;
   if (bet.onChain && bet.currency === "SOL" && bet.onChainState !== "locked") return false;
@@ -167,6 +173,17 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** Short, friendly deadline: "today 5 PM", "Fri", "Dec 3". */
 export function formatDeadline(timestampMs: number, now = Date.now()): string {
   const date = new Date(timestampMs);
+  if (date.getHours() === 0 && date.getMinutes() === 0) {
+    // Midnight reads better as the end of the day before: "end of today", "end of Fri".
+    const dayBefore = new Date(timestampMs - 60_000);
+    const today = new Date(now);
+    const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+    const offset = Math.floor((dayBefore.getTime() - startOfToday) / DAY_MS);
+    if (offset === 0) return "end of today";
+    if (offset === 1) return "end of tomorrow";
+    if (offset > 1 && offset < 7) return `end of ${dayBefore.toLocaleDateString([], { weekday: "short" })}`;
+    return `end of ${dayBefore.toLocaleDateString([], { month: "short", day: "numeric" })}`;
+  }
   const today = new Date(now);
   const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
   const dayOffset = Math.floor((timestampMs - startOfToday) / DAY_MS);
@@ -175,6 +192,13 @@ export function formatDeadline(timestampMs: number, now = Date.now()): string {
   if (dayOffset === 1) return `tomorrow ${time}`;
   if (dayOffset > 1 && dayOffset < 7) return date.toLocaleDateString([], { weekday: "short" });
   return date.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+/** Clock time, with midnight spelled out: "6:30 PM", "midnight". */
+export function formatTimeOfDay(timestampMs: number): string {
+  const date = new Date(timestampMs);
+  if (date.getHours() === 0 && date.getMinutes() === 0) return "midnight";
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 const MIN_REAL_TIMESTAMP_MS = Date.UTC(2000, 0, 1);
@@ -208,11 +232,22 @@ export function friendlyError(err: unknown, fallback = "Something went wrong. Tr
     return "Couldn't reach BAAM. Check your connection and try again.";
   }
   if (/^relayer \d+$/.test(raw)) return fallback;
+  if (/429|too many requests|jsonrpc/i.test(raw)) return "BAAM is busy right now. Try again in a minute.";
   const funds = /insufficient SOL: requires ([\d.]+) SOL, available ([\d.]+) SOL/i.exec(raw);
   if (funds) {
     return `Not enough SOL in the wallet. This needs ${Number(funds[1])} SOL (stake plus fees) and there's ${Number(funds[2])} SOL. Add SOL, then try again.`;
   }
-  const cleaned = raw.replace(/https?:\/\/\S+/g, "").replace(/\s{2,}/g, " ").trim();
+  const points = /(\w+) needs? (\d+) points but has (\d+)/i.exec(raw);
+  if (points) {
+    const who = points[1]!.toLowerCase() === "you" ? "you have" : `${points[1]} has`;
+    return `Not enough points. This needs ${Number(points[2]).toLocaleString()} pts and ${who} ${Number(points[3]).toLocaleString()}.`;
+  }
+  const cleaned = raw
+    .replace(/https?:\/\/\S+/g, "")
+    // Relayer validation names fields like "schedule.endDate"; keep just the words.
+    .replace(/\bschedule\.(\w+)/g, (_, field: string) => field.replace(/([A-Z])/g, " $1").toLowerCase())
+    .replace(/\s{2,}/g, " ")
+    .trim();
   if (!cleaned) return fallback;
   return cleaned.charAt(0).toUpperCase() + cleaned.slice(1).replace(/([^.!?])$/, "$1.");
 }

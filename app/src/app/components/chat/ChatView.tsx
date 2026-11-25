@@ -3,6 +3,7 @@ import { ChevronLeft, Ellipsis, LogOut, SendHorizontal, Ticket as TicketIcon, Us
 import {
   addGroupMemberByUsername,
   createBet,
+  createCheckinBet,
   getMessages,
   leaveGroup,
   postMessage,
@@ -65,6 +66,21 @@ function buildRows(messages: ChatMessage[], betsById: Record<string, Bet>): Row[
 
 type GroupDialog = "invite" | "leave" | "settled" | null;
 
+/** A sender's name; tapping it opens their record. */
+function SenderName({ name, self, onOpen }: { name: string; self: boolean; onOpen?: (name: string) => void }) {
+  if (!onOpen) return <span className="font-semibold">{self ? "You" : name}</span>;
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(name)}
+      className="rounded-sm font-semibold hover:underline hover:underline-offset-4"
+      aria-label={self ? "Your record" : `See ${name}'s record`}
+    >
+      {self ? "You" : name}
+    </button>
+  );
+}
+
 export function ChatView({
   groupId,
   onBack,
@@ -76,7 +92,9 @@ export function ChatView({
   focusRequest?: { betId: string; token: number } | null;
   onLeft: () => void;
 }) {
-  const { user, groups, bets, setOpenGroupId, markGroupRead, refresh, upsertGroup } = useBaamData();
+  const {
+    user, groups, bets, setOpenGroupId, markGroupRead, refresh, refreshPoints, upsertGroup, openProfile, openDetails,
+  } = useBaamData();
   const group = groups.find((g) => g.id === groupId) ?? null;
   const { handlers, dialogs: betDialogs } = useBetActions();
 
@@ -199,14 +217,27 @@ export function ChatView({
   async function postBet(bet: NewBet): Promise<void> {
     if (!group) throw new Error("This chat isn't available anymore.");
     const acceptor = otherMembers.find((name) => sameName(name, bet.acceptor)) ?? "anyone";
-    await createBet({
+    const common = {
       groupId,
       type: bet.type,
       acceptor,
       terms: bet.terms.trim(),
       stake: bet.stake.trim(),
-      currency: "SOL",
+      currency: bet.currency,
       minBettors: 2,
+    };
+    if (bet.habit) {
+      await createCheckinBet({
+        ...common,
+        witnesses: bet.witnesses,
+        acceptByDate: bet.acceptByDate ?? null,
+        fallbackKind: bet.fallbackKind,
+        schedule: bet.habit.schedule,
+        requiredCheckins: bet.habit.requiredCheckins,
+        doer: bet.habit.doer,
+      });
+    } else await createBet({
+      ...common,
       ...(bet.sport
         ? {
             // Kept for parity with older clients; sports bets don't use witnesses.
@@ -230,6 +261,7 @@ export function ChatView({
     const { messages: next } = await getMessages(groupId);
     setMessages(next);
     void refresh();
+    void refreshPoints();
   }
 
   function openDialog(next: GroupDialog): void {
@@ -341,7 +373,7 @@ export function ChatView({
                 return (
                   <li key={row.message.id} data-bet-id={row.message.betId} className="py-3 first:pt-0">
                     <p className="mb-2 text-label">
-                      <span className="font-semibold">{sameName(poster, user.username) ? "You" : poster}</span>
+                      <SenderName name={poster} self={sameName(poster, user.username)} onOpen={row.bet ? openProfile : undefined} />
                       <span className="text-ink-soft"> posted a bet</span>
                       <time className="ml-2 text-meta text-ink-soft">{time}</time>
                     </p>
@@ -352,6 +384,8 @@ export function ChatView({
                           viewer={user.username}
                           handlers={handlers}
                           highlighted={highlightedBetId === row.bet.id}
+                          onOpen={() => openDetails(row.bet!.id)}
+                          openLabel={`Open bet: ${row.bet.terms}`}
                         />
                       ) : (
                         <p className="text-label text-ink-soft">Loading bet…</p>
@@ -373,7 +407,7 @@ export function ChatView({
                   <li className={cn(row.showName && index > 0 && "pt-3")}>
                     {row.showName && (
                       <p className="text-label">
-                        <span className="font-semibold">{mine ? "You" : row.message.sender}</span>
+                        <SenderName name={row.message.sender} self={mine} onOpen={openProfile} />
                         <time className="ml-2 text-meta text-ink-soft">{time}</time>
                       </p>
                     )}
@@ -491,7 +525,12 @@ export function ChatView({
           <ul className="space-y-3 pt-1">
             {settledBets.map((bet) => (
               <li key={bet.id}>
-                <BetTicket bet={bet} viewer={user.username} variant="compact" />
+                <BetTicket
+                  bet={bet}
+                  viewer={user.username}
+                  variant="compact"
+                  onOpen={() => { setDialog(null); openDetails(bet.id); }}
+                />
               </li>
             ))}
           </ul>
