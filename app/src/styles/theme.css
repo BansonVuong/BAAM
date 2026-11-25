@@ -49,8 +49,8 @@
 
   --danger:         #FF7F8E;
 
-  --ticket-shadow-near: rgba(0, 0, 0, 0.35);
-  --ticket-shadow-far:  rgba(0, 0, 0, 0.75);
+  --ticket-shadow-near: rgba(0, 0, 0, 0.22);
+  --ticket-shadow-far:  rgba(0, 0, 0, 0.42);
   --scrim:              rgba(6, 7, 18, 0.72);
   --hover:              rgba(241, 242, 248, 0.07);
 }
@@ -89,8 +89,10 @@
   --text-title--line-height: 28px;
   --text-stake:              40px;
   --text-stake--line-height: 40px;
-  --text-stamp:              18px;
-  --text-stamp--line-height: 18px;
+  /* DESIGN.md says 18px; 19px makes the 900-weight stamp count as large text,
+     so the red stamp on done stock clears WCAG AA (3:1) in both themes. */
+  --text-stamp:              19px;
+  --text-stamp--line-height: 19px;
 }
 
 /* Width is Archivo's expressive axis. */

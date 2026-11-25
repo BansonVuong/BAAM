@@ -232,7 +232,8 @@ function ActionButton({ action }: { action: TicketAction }) {
       ? "bg-ticket-ink px-4 text-ticket-paper hover:bg-ticket-ink/85"
       : "-mx-1 px-2 underline decoration-ticket-ink/35 decoration-2 underline-offset-4 hover:bg-ticket-ink/8 hover:decoration-ticket-ink",
     action.pressed && !primary && "bg-ticket-ink/10 no-underline",
-    action.disabled && "cursor-not-allowed opacity-55 hover:bg-transparent",
+    action.disabled && !action.pressed && "cursor-not-allowed opacity-55 hover:bg-transparent",
+    action.disabled && action.pressed && "cursor-default",
   );
   if (action.href) {
     return (

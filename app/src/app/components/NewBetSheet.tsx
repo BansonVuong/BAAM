@@ -327,24 +327,6 @@ export function NewBetSheet({
             </div>
           )}
 
-          <Field
-            label="Challenge"
-            hint={memberOptions.length === 0
-              ? "Nobody else is in this group yet, so this posts as an open challenge."
-              : acceptor === "anyone" ? "Anyone in the group can accept." : `Only ${acceptor} can accept.`}
-          >
-            <Segmented
-              label="Challenge"
-              value={acceptor}
-              onChange={setAcceptor}
-              size="sm"
-              options={[
-                { value: "anyone", label: "Anyone" },
-                ...memberOptions.map((name) => ({ value: name, label: name })),
-              ]}
-            />
-          </Field>
-
           {!isSports && (
             <Field
               label="The bet"
@@ -364,6 +346,24 @@ export function NewBetSheet({
               />
             </Field>
           )}
+
+          <Field
+            label="Challenge"
+            hint={memberOptions.length === 0
+              ? "Nobody else is in this group yet, so this posts as an open challenge."
+              : acceptor === "anyone" ? "Anyone in the group can accept." : `Only ${acceptor} can accept.`}
+          >
+            <Segmented
+              label="Challenge"
+              value={acceptor}
+              onChange={setAcceptor}
+              size="sm"
+              options={[
+                { value: "anyone", label: "Anyone" },
+                ...memberOptions.map((name) => ({ value: name, label: name })),
+              ]}
+            />
+          </Field>
 
           <Field
             label="Stake"

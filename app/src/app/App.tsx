@@ -1,5 +1,5 @@
-import { lazy, Suspense, useCallback, useEffect, useState, type ComponentType } from "react";
-import { MessageCircle, Medal, Ticket as TicketIcon, Volleyball } from "lucide-react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { MessageCircle, Medal, Ticket as TicketIcon, Volleyball, type LucideIcon } from "lucide-react";
 import {
   AUTH_TOKEN_STORAGE_KEY,
   DISCORD_ENABLED,
@@ -29,7 +29,7 @@ const TicketPreview = import.meta.env.DEV
 
 type ViewId = "chats" | "tickets" | "sports" | "standings";
 
-const NAV: { id: ViewId; label: string; Icon: ComponentType<{ size?: number; "aria-hidden"?: boolean }> }[] = [
+const NAV: { id: ViewId; label: string; Icon: LucideIcon }[] = [
   { id: "chats", label: "Chats", Icon: MessageCircle },
   { id: "tickets", label: "Tickets", Icon: TicketIcon },
   { id: "sports", label: "Sports", Icon: Volleyball },
@@ -141,10 +141,7 @@ function Shell({ theme, onToggleTheme, onSignOut }: {
       );
     } else {
       main = (
-        <div className="bg-paper">
-          <div className="flex justify-end px-4 py-2">
-            <NewGroupButton onCreated={openGroup} variant="ghost" />
-          </div>
+        <div className="min-h-full bg-paper">
           <GroupList activeGroupId={null} onSelect={openGroup} />
         </div>
       );
@@ -216,6 +213,7 @@ function Shell({ theme, onToggleTheme, onSignOut }: {
           <header className="flex shrink-0 items-center gap-1 border-b border-rule bg-paper py-2 pl-4 pr-2">
             <ScreenTitle>{titles[view]}</ScreenTitle>
             <div className="ml-auto flex items-center">
+              {view === "chats" && <NewGroupButton onCreated={openGroup} variant="ghost" iconOnly />}
               <NotificationsMenu />
               {accountMenu}
             </div>

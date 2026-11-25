@@ -220,7 +220,7 @@ export function describeBet(
     for (const side of sides) {
       const pressed = mine === side.choice;
       actions.push({
-        label: pressed ? `Voted ${side.name}` : `Vote ${side.name}`,
+        label: pressed ? `Voted ${side.name}` : mine ? `Change to ${side.name}` : `Vote ${side.name}`,
         emphasis: mine ? "plain" : "primary",
         pressed,
         disabled: voting || pressed,

@@ -81,7 +81,7 @@ export function TicketsView({
         const settled = bucket === "done";
         const shown = settled && !showAllSettled ? entries.slice(0, SETTLED_PREVIEW) : entries;
         return (
-          <section key={bucket} className="mt-8 first-of-type:mt-6 lg:first-of-type:mt-8" aria-labelledby={`tickets-${bucket}`}>
+          <section key={bucket} className="mt-8 first-of-type:mt-1 lg:first-of-type:mt-8" aria-labelledby={`tickets-${bucket}`}>
             <div className="mb-3 flex items-baseline gap-2">
               <h2 id={`tickets-${bucket}`} className="text-body font-bold">{title}</h2>
               <span className="text-label text-ink-soft">{entries.length}</span>

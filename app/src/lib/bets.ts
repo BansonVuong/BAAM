@@ -208,6 +208,10 @@ export function friendlyError(err: unknown, fallback = "Something went wrong. Tr
     return "Couldn't reach BAAM. Check your connection and try again.";
   }
   if (/^relayer \d+$/.test(raw)) return fallback;
+  const funds = /insufficient SOL: requires ([\d.]+) SOL, available ([\d.]+) SOL/i.exec(raw);
+  if (funds) {
+    return `Not enough SOL in the wallet. This needs ${Number(funds[1])} SOL (stake plus fees) and there's ${Number(funds[2])} SOL. Add SOL, then try again.`;
+  }
   const cleaned = raw.replace(/https?:\/\/\S+/g, "").replace(/\s{2,}/g, " ").trim();
   if (!cleaned) return fallback;
   return cleaned.charAt(0).toUpperCase() + cleaned.slice(1).replace(/([^.!?])$/, "$1.");

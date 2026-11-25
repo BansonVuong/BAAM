@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus } from "lucide-react";
+import { Plus, SquarePen } from "lucide-react";
 import { createGroup } from "../../../lib/relayer";
 import { formatListTime, friendlyError } from "../../../lib/bets";
 import { cn } from "../../../lib/cn";
@@ -70,10 +70,11 @@ export function GroupList({
   );
 }
 
-export function NewGroupButton({ onCreated, variant = "secondary", className }: {
+export function NewGroupButton({ onCreated, variant = "secondary", className, iconOnly = false }: {
   onCreated: (groupId: string) => void;
   variant?: "secondary" | "ghost";
   className?: string;
+  iconOnly?: boolean;
 }) {
   const { refresh, upsertGroup } = useBaamData();
   const [open, setOpen] = useState(false);
@@ -106,10 +107,10 @@ export function NewGroupButton({ onCreated, variant = "secondary", className }: 
       <button
         type="button"
         onClick={() => { setError(null); setOpen(true); }}
-        className={buttonClass(variant, "sm", className)}
+        className={buttonClass(variant, iconOnly ? "icon" : "sm", className)}
+        aria-label={iconOnly ? "New group" : undefined}
       >
-        <Plus size={18} aria-hidden />
-        New group
+        {iconOnly ? <SquarePen size={20} aria-hidden /> : <><Plus size={18} aria-hidden />New group</>}
       </button>
       <Sheet
         open={open}
