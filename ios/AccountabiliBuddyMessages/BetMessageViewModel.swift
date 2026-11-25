@@ -29,6 +29,13 @@ final class BetMessageViewModel: ObservableObject {
     @Published var betType: MessageBetType = .PERSONAL
     @Published var terms: String = ""
     @Published var stake: String = ""
+    /// Currency for the bet being composed. Follows the server default until the user
+    /// picks one explicitly (see `selectStakeCurrency`).
+    @Published private(set) var stakeCurrency: MessageBetCurrency = .PTS
+    /// `betCurrencies` from `GET /profile`, cached for the session (nil until loaded).
+    @Published private(set) var betCurrencies: MessageBetCurrencies?
+    /// Play-money balance from `/auth/me` or `/profile` (nil on older relayers).
+    @Published private(set) var pointsBalance: Double?
     @Published var recipientUsername: String = ""
     @Published var recipientCandidates: [String] = []
     @Published var conversation: MessageConversation?
@@ -52,6 +59,20 @@ final class BetMessageViewModel: ObservableObject {
 
     var isSignedIn: Bool { currentUser != nil }
 
+    /// Currencies the server accepts for new bets (SOL only for pre-points relayers).
+    var allowedStakeCurrencies: [MessageBetCurrency] {
+        (betCurrencies ?? profile?.currencies ?? .legacy).allowedCurrencies
+    }
+
+    /// Show a Points / SOL choice only when the server allows both.
+    var offersCurrencyChoice: Bool { allowedStakeCurrencies.count > 1 }
+
+    var isSolAllowed: Bool { allowedStakeCurrencies.contains(.SOL) }
+
+    var pointsBalanceLabel: String? {
+        pointsBalance.map { "You have \(MessageStakeFormatter.points($0))" }
+    }
+
     private let defaults = UserDefaults.standard
     private let authTokenKey = "imessage.authToken"
     private let conversationKeyPrefix = "imessage.conversation."
@@ -62,6 +83,7 @@ final class BetMessageViewModel: ObservableObject {
     private var localParticipantId: String?
     private var conversationParticipantIds: [String] = []
     private var pendingConversationId: String?
+    private var userPickedCurrency = false
     private let client: RelayerClient
 
     init() {
@@ -83,7 +105,9 @@ final class BetMessageViewModel: ObservableObject {
 
         do {
             isBusy = true
-            currentUser = try await client.currentUser()
+            let me = try await client.currentUser()
+            currentUser = me.user
+            if let balance = me.pointsBalance { pointsBalance = balance }
             try await refreshProfile()
             await refreshConversationState()
         } catch {
@@ -136,13 +160,43 @@ final class BetMessageViewModel: ObservableObject {
     }
 
     func refreshProfile() async throws {
-        profile = try await client.fetchProfile()
+        let fetched = try await client.fetchProfile()
+        profile = fetched
+        if let balance = fetched.pointsBalance { pointsBalance = balance }
+        applyBetCurrencies(fetched.currencies)
+    }
+
+    /// Caches the server's currency config and keeps the compose selection valid:
+    /// follow the server default unless the user explicitly picked another allowed one.
+    private func applyBetCurrencies(_ currencies: MessageBetCurrencies) {
+        betCurrencies = currencies
+        let allowed = currencies.allowedCurrencies
+        if !userPickedCurrency || !allowed.contains(stakeCurrency) {
+            stakeCurrency = currencies.defaultCurrency
+            userPickedCurrency = false
+        }
+    }
+
+    func selectStakeCurrency(_ currency: MessageBetCurrency) {
+        guard allowedStakeCurrencies.contains(currency) else { return }
+        if currency != stakeCurrency {
+            // "0.25" SOL isn't a valid points stake (and 500 pts isn't 500 SOL) —
+            // start the amount fresh rather than silently reinterpreting it.
+            stake = ""
+        }
+        stakeCurrency = currency
+        userPickedCurrency = true
+        errorMessage = nil
     }
 
     func signOut(showMessage: Bool = true) {
         authToken = ""
         currentUser = nil
         profile = nil
+        betCurrencies = nil
+        pointsBalance = nil
+        userPickedCurrency = false
+        stakeCurrency = .PTS
         selectedBetId = nil
         selectedCard = nil
         recipientUsername = ""
@@ -363,9 +417,14 @@ final class BetMessageViewModel: ObservableObject {
     func createBetAndDraftMessage(sendDraft: (BetDraftMessage) -> Void) async {
         do {
             try requireSignedIn()
-            let request = try buildCreateBetRequest()
             isBusy = true
             errorMessage = nil
+            if stakeCurrency == .PTS || betCurrencies == nil {
+                // Fresh balance for the points precheck (and currency config if it
+                // never loaded); the server re-checks either way.
+                try? await refreshProfile()
+            }
+            let request = try buildCreateBetRequest()
 
             let created = try await client.createBet(request)
             let link = try await client.deepLink(for: created.bet.id)
@@ -379,7 +438,7 @@ final class BetMessageViewModel: ObservableObject {
                 eyebrow: "BAAM · \(betType.label.uppercased()) BET",
                 title: request.acceptor == "anyone" ? "Open challenge" : "Challenge for @\(request.acceptor)",
                 subtitle: request.terms,
-                highlight: "\(request.stake) SOL",
+                highlight: MessageStakeFormatter.stake(amount: request.stake, currency: request.currency),
                 footnote: "Created by @\(currentUser?.username ?? "challenger")",
                 action: "Tap to view & accept"
             )
@@ -432,16 +491,21 @@ final class BetMessageViewModel: ObservableObject {
         guard let link = URL(string: card.links.deepLink) else {
             throw RelayerClientError.invalidResponse
         }
-        let voteSummary = card.validation == "witness"
-            ? " · \(card.votes.total)/\(card.witnessesRequired) votes"
-            : ""
+        let progressSummary: String
+        if let checkinSummary = card.checkinSummary {
+            progressSummary = " · \(checkinSummary)"
+        } else if card.validation == "witness" {
+            progressSummary = " · \(card.votes.total)/\(card.witnessesRequired) votes"
+        } else {
+            progressSummary = ""
+        }
         return BetDraftMessage(
             url: link,
             kind: .bet,
             eyebrow: "BAAM · BET UPDATE",
             title: event,
             subtitle: card.terms,
-            highlight: "\(card.stake.amount) \(card.stake.currency) · \(card.statusLabel)\(voteSummary)",
+            highlight: "\(card.stake.display) · \(card.statusLabel)\(progressSummary)",
             footnote: "Updated by @\(currentUser?.username ?? "member")",
             action: "Tap to view latest"
         )
@@ -477,9 +541,17 @@ final class BetMessageViewModel: ObservableObject {
         guard let conversation, conversation.joined else {
             throw RelayerClientError.server("Initialize or join this conversation first.")
         }
-        let trimmedStake = stake.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let numericStake = Double(trimmedStake), numericStake > 0 else {
-            throw RelayerClientError.server("Stake must be a positive SOL amount.")
+        let currency = stakeCurrency
+        guard allowedStakeCurrencies.contains(currency) else {
+            let options = allowedStakeCurrencies.map(\.label).joined(separator: " or ")
+            throw RelayerClientError.server("\(currency.label) bets aren’t available right now. Use \(options).")
+        }
+        let normalizedStake: String
+        switch MessageStakeValidator.validate(stake, currency: currency, pointsBalance: pointsBalance) {
+        case .success(let value):
+            normalizedStake = value
+        case .failure(let error):
+            throw RelayerClientError.server(error.message)
         }
         let selectedRecipient = recipientUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedAcceptor: String
@@ -518,8 +590,8 @@ final class BetMessageViewModel: ObservableObject {
             type: betType,
             acceptor: normalizedAcceptor,
             terms: normalizedTerms,
-            stake: trimmedStake,
-            currency: "SOL",
+            stake: normalizedStake,
+            currency: currency,
             sport: sportsMode ? sport.rawValue : nil,
             gameId: selectedGame?.gameId,
             backsHome: sportsMode ? backsHome : nil,
@@ -534,6 +606,22 @@ final class BetMessageViewModel: ObservableObject {
         recipientUsername = ""
         backsHome = true
         selectedGame = nil
+    }
+
+    /// Web app link for actions the extension doesn't do natively yet (uploading proof,
+    /// checking in, reviewing check-ins). Production serves the web app and the API on
+    /// the same origin, so this reuses the relayer base URL.
+    func webAppURL(forBet betId: String) -> URL? {
+        var components = URLComponents(url: productionURL, resolvingAgainstBaseURL: false)
+        components?.path = "/"
+        components?.queryItems = [URLQueryItem(name: "bet", value: betId)]
+        return components?.url
+    }
+
+    /// Absolute URL for a relayer-relative path such as `firstProofImageUrl`
+    /// (`/proofs/<id>?sig=…`, signed for this viewer).
+    func relayerURL(forPath path: String) -> URL? {
+        URL(string: path, relativeTo: productionURL)?.absoluteURL
     }
 
     private static func betId(from url: URL?) -> String? {

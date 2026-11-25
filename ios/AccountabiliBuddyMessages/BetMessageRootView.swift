@@ -108,7 +108,18 @@ struct BetMessageRootView: View {
                 .font(.caption)
             }
 
-            if let profile = viewModel.profile {
+            if let points = viewModel.pointsBalance {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Points balance")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(MessageStakeFormatter.points(points))
+                        .font(.title3.weight(.semibold))
+                }
+            }
+
+            // SOL wallet details only matter while the server still takes SOL bets.
+            if let profile = viewModel.profile, viewModel.isSolAllowed {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("SOL balance")
                         .font(.caption)
@@ -263,9 +274,32 @@ struct BetMessageRootView: View {
                     )
             }
 
-            TextField("Stake (SOL)", text: $viewModel.stake)
-                .keyboardType(.decimalPad)
-                .textFieldStyle(.roundedBorder)
+            if viewModel.offersCurrencyChoice {
+                Picker("Currency", selection: Binding(
+                    get: { viewModel.stakeCurrency },
+                    set: { viewModel.selectStakeCurrency($0) }
+                )) {
+                    ForEach(viewModel.allowedStakeCurrencies) { currency in
+                        Text(currency.label).tag(currency)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            if viewModel.stakeCurrency == .PTS {
+                TextField("Stake (points)", text: $viewModel.stake)
+                    .keyboardType(.numberPad)
+                    .textFieldStyle(.roundedBorder)
+                if let balance = viewModel.pointsBalanceLabel {
+                    Text(balance)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                TextField("Stake (SOL)", text: $viewModel.stake)
+                    .keyboardType(.decimalPad)
+                    .textFieldStyle(.roundedBorder)
+            }
 
             Button {
                 Task {
@@ -475,18 +509,25 @@ struct BetMessageRootView: View {
                 }
 
                 HStack {
-                    Text("\(card.stake.amount) \(card.stake.currency)")
+                    Text(card.stake.display)
                         .font(.subheadline.weight(.semibold))
                     Spacer()
-                    Text(card.onChain.label)
+                    Text(card.escrowLabel)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.trailing)
                 }
 
-                onChainLinks(for: card)
+                // Points bets never touch the chain, so no explorer UI for them.
+                if !card.isPoints {
+                    onChainLinks(for: card)
+                }
 
-                votingSection(for: card)
+                evidenceSection(for: card)
+
+                if !card.isRecurring {
+                    votingSection(for: card)
+                }
 
                 HStack {
                     Button("Refresh") {
@@ -564,6 +605,81 @@ struct BetMessageRootView: View {
         }
     }
 
+    /// Proof count + recurring check-in progress, with web-app links for the actions
+    /// the extension doesn't do natively yet (proof upload, check-in, review).
+    @ViewBuilder
+    private func evidenceSection(for card: MessageBetCard) -> some View {
+        let proofSummary = card.proofSummary
+        let checkinSummary = card.checkinSummary
+        let webActions = webActionLabels(for: card)
+        if proofSummary != nil || checkinSummary != nil || !webActions.isEmpty {
+            Divider()
+            VStack(alignment: .leading, spacing: 6) {
+                if let checkins = card.checkins, let checkinSummary {
+                    HStack {
+                        Text("Check-ins")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if let doer = checkins.doerUsername {
+                            Text("@\(doer) checks in")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Text(checkinSummary)
+                        .font(.subheadline.weight(.semibold))
+                    if let pending = checkins.pendingReview, pending > 0 {
+                        Text("\(pending) awaiting witness review")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if let proofSummary {
+                    HStack(spacing: 8) {
+                        if let path = card.firstProofImageUrl, let url = viewModel.relayerURL(forPath: path) {
+                            AsyncImage(url: url) { image in
+                                image.resizable().scaledToFill()
+                            } placeholder: {
+                                Color.secondary.opacity(0.12)
+                            }
+                            .frame(width: 36, height: 36)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                        Label(proofSummary, systemImage: "photo.on.rectangle")
+                            .font(.caption.weight(.medium))
+                    }
+                }
+
+                if !webActions.isEmpty, let url = viewModel.webAppURL(forBet: card.betId) {
+                    ForEach(webActions, id: \.self) { label in
+                        Link(destination: url) {
+                            HStack(spacing: 6) {
+                                Text(label)
+                                Spacer()
+                                Image(systemName: "arrow.up.right.square")
+                            }
+                            .font(.caption.weight(.medium))
+                        }
+                    }
+                    Text("Opens BAAM on the web.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func webActionLabels(for card: MessageBetCard) -> [String] {
+        var labels: [String] = []
+        if card.actions.canCheckin == true { labels.append("Check in for today") }
+        if card.actions.canReview == true { labels.append("Review check-ins") }
+        if card.actions.canAddProof == true { labels.append("Add proof") }
+        return labels
+    }
+
     @ViewBuilder
     private func votingSection(for card: MessageBetCard) -> some View {
         if card.validation == "witness" {
@@ -586,9 +702,15 @@ struct BetMessageRootView: View {
                         .foregroundStyle(.green)
                 }
 
-                HStack(spacing: 8) {
-                    voteButton(for: card, choice: .challenger, username: card.challenger, count: card.votes.challenger)
-                    voteButton(for: card, choice: .acceptor, username: card.acceptor, count: card.votes.acceptor)
+                if card.actions.canVote {
+                    HStack(spacing: 8) {
+                        voteButton(for: card, choice: .challenger, username: card.challenger, count: card.votes.challenger)
+                        voteButton(for: card, choice: .acceptor, username: card.acceptor, count: card.votes.acceptor)
+                    }
+                } else if card.votes.total > 0 {
+                    Text("@\(card.challenger) \(card.votes.challenger) · @\(card.acceptor) \(card.votes.acceptor)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
 
                 if !card.actions.canVote && card.winner == nil {
@@ -646,7 +768,7 @@ struct BetMessageRootView: View {
         if card.status.lowercased() == "pending" {
             return "Voting opens once someone accepts this bet."
         }
-        if card.onChain.enabled && card.stake.currency == "SOL" && card.onChain.state != "locked" {
+        if card.onChain.enabled && card.stake.kind == .SOL && card.onChain.state != "locked" {
             return "Both sides must stake on-chain before voting opens."
         }
         return "Only people who aren’t in this bet can vote for the winner."

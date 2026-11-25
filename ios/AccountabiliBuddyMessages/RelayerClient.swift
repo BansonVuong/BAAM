@@ -58,14 +58,14 @@ final class RelayerClient {
         )
     }
 
-    func currentUser() async throws -> MessageAuthUser {
-        let response: MessageCurrentUserResponse = try await requestJSON(
+    /// `GET /auth/me` → the signed-in user plus their points balance (nil on older relayers).
+    func currentUser() async throws -> MessageCurrentUserResponse {
+        try await requestJSON(
             method: "GET",
             path: "/auth/me",
             body: Optional<String>.none,
             responseType: MessageCurrentUserResponse.self
         )
-        return response.user
     }
 
     func fetchProfile() async throws -> MessageProfile {
