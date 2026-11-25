@@ -54,4 +54,9 @@ pub enum ErrorCode {
     InvalidOutcome,
     #[msg("Fallback can only run after the resolve-by date")]
     FallbackTooEarly,
+
+    // ── permissionless escape hatches ──────────────────────────────────────────
+    // Append new variants at the end only: error codes are positional.
+    #[msg("The oracle grace period has not elapsed yet")]
+    StaleGraceNotElapsed,
 }

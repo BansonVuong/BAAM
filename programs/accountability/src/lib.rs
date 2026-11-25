@@ -100,4 +100,18 @@ pub mod accountability {
     pub fn settle_social(ctx: Context<SettleSocial>, outcome: u8) -> Result<()> {
         social_bet::process_settle_social(ctx, outcome)
     }
+
+    // ── permissionless escape hatches (oracle never settled) ─────────────────────
+
+    /// Anyone may refund both sides of a locked sports bet once
+    /// `settle_after + STALE_BET_GRACE_SECS` has passed without a settlement.
+    pub fn refund_stale_bet(ctx: Context<RefundStaleBet>) -> Result<()> {
+        sports_bet::process_refund_stale_bet(ctx)
+    }
+
+    /// Anyone may run the precommitted fallback of a locked social bet once
+    /// `end_date + STALE_BET_GRACE_SECS` has passed without a settlement.
+    pub fn fallback_stale_social(ctx: Context<FallbackStaleSocial>) -> Result<()> {
+        social_bet::process_fallback_stale_social(ctx)
+    }
 }
