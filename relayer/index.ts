@@ -23,8 +23,8 @@
 //   BET_CURRENCIES    comma list of currencies POST /bets accepts: PTS (play-money
 //                     points, off-chain) and/or SOL (devnet escrow). Default "PTS,SOL";
 //                     set "PTS" to disable SOL bets. The FIRST entry is the default
-//                     when a client omits `currency` (current web/iOS clients send
-//                     "SOL" explicitly). Points never convert to or from SOL.
+//                     when a client omits `currency` (the web and iOS clients pick
+//                     from GET /profile betCurrencies). Points never convert to or from SOL.
 //   POINTS_SIGNUP_GRANT one-time points grant per user (default 1000)
 //   POINTS_TOPUP_FLOOR  once per UTC day a balance below this can be refilled up to it
 //                       (default 100; 0 disables top-ups)

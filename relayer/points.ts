@@ -498,7 +498,11 @@ async function releaseHoldIfApplied(
 }
 
 function insufficientMessage(who: string, stake: number, balance: number | undefined): string {
-  return `${who} needs ${stake} points but has ${balance ?? 0}`;
+  const fmt = (n: number) => n.toLocaleString("en-US");
+  const have = fmt(balance ?? 0);
+  return who === "you"
+    ? `You need ${fmt(stake)} pts but have ${have} pts.`
+    : `${who} needs ${fmt(stake)} pts but has ${have} pts.`;
 }
 
 /**
