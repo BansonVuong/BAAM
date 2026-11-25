@@ -73,3 +73,31 @@ yarn bet backout --creator <creatorPubkey> --game 401584793 --keypair ~/opp.json
 
 yarn bet list
 ```
+
+## Points mode (PTS, play money)
+
+`POST /bets` accepts `currency: "PTS" | "SOL"`; `BET_CURRENCIES` (default
+`PTS,SOL`, first entry = default when omitted) controls what's allowed. Points
+have no cash value: no purchase, transfer, withdrawal, or SOL conversion exists.
+PTS bets are escrowed off-chain by `relayer/points.ts` (`onChain: false`,
+`pointsState: open | held | settled | refunded | burned`):
+
+- Witness bets hold both stakes at acceptance; the crank pays the pot once
+  `resolvedWinner` is set, or applies the return/burn fallback after the
+  resolve-by date (charity is rejected for PTS).
+- Sports bets hold the challenger at creation and the acceptor at acceptance
+  (before kickoff); unaccepted at kickoff → refund; final result → payout, draw → refund.
+- Balances live in `pointsBalances`, every movement in the append-only
+  `pointsLedger` (unique idempotency `key`), so retries never double-pay and
+  debits never overdraw.
+
+```bash
+curl -H "authorization: Bearer $TOKEN" http://localhost:8787/points          # balance, held, top-up, ledger
+curl -X POST -H "authorization: Bearer $TOKEN" http://localhost:8787/points/topup
+curl -H "authorization: Bearer $TOKEN" 'http://localhost:8787/leaderboard?currency=PTS'
+curl -X POST -H "authorization: Bearer $OPERATOR_TOKEN" http://localhost:8787/points/crank  # operator-only
+
+# checks (pure logic, then end-to-end against a throwaway local relayer + DB)
+TS_NODE_TRANSPILE_ONLY=1 npx ts-node relayer/points.check.ts
+npx ts-node -T relayer/points.e2e.ts   # see the header of points.e2e.ts for the env it needs
+```
