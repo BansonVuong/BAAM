@@ -60,6 +60,7 @@ import {
   type BetDoc,
   type DiscordConversationDoc,
 } from "./db";
+import { isWitnessOfferExpired } from "./witness-fallback";
 
 const WEB_BASE_URL = (process.env.WEB_BASE_URL ?? "https://accountabilibuddy.app").replace(/\/$/, "");
 
@@ -981,6 +982,10 @@ async function handleAcceptBet(interaction: ButtonInteraction, betId: string): P
 
   if (existing.status !== "PENDING") {
     await interaction.followUp({ content: "This bet is no longer open for acceptance.", ephemeral: true });
+    return;
+  }
+  if (isWitnessOfferExpired(existing, Date.now())) {
+    await interaction.followUp({ content: "This offer expired before it was accepted.", ephemeral: true });
     return;
   }
   if (existing.challenger.toLowerCase() === user.username.toLowerCase()) {

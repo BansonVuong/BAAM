@@ -306,6 +306,37 @@ export interface Bet {
   awayTeam?: string;
   /** True when the challenger backs the home side. */
   challengerBacksHome?: boolean;
+  // ── witness-bet deadlines + unresolved fallback ───────────────────────────────
+  acceptByDate?: number | null;
+  resolveByDate?: number;
+  fallbackKind?: "return" | "burn" | "charity";
+  charityName?: string;
+  /** On-chain account type: "social" (fallback enforced on-chain) or legacy "sports". */
+  onChainKind?: "social" | "sports";
+  /** Set once the resolve-by date passed with no verdict and the fallback ran (or is running). */
+  fallbackApplied?: "return" | "burn" | "charity";
+  /** Legacy escrow whose burn/charity fallback needs an operator; funds still escrowed. */
+  fallbackBlocked?: boolean;
+  /** Unaccepted offer whose accept-by deadline passed. */
+  offerExpired?: boolean;
+}
+
+/** Outcome text for a bet that ended without a verdict (fallback/expiry), else null. */
+export function betNoVerdictLabel(bet: Bet): string | null {
+  if (bet.offerExpired) return "Offer expired — never accepted";
+  if (bet.fallbackBlocked) {
+    return `No verdict by deadline — ${bet.fallbackKind ?? "fallback"} awaiting operator (funds still escrowed)`;
+  }
+  if (!bet.fallbackApplied) return null;
+  const done = bet.onChainState === "settled";
+  switch (bet.fallbackApplied) {
+    case "return": return done ? "Refunded — no verdict by deadline" : "Refund pending — no verdict by deadline";
+    case "burn": return done ? "Burned — no verdict by deadline" : "Burn pending — no verdict by deadline";
+    case "charity": {
+      const to = bet.charityName ? ` to ${bet.charityName}` : " to charity";
+      return done ? `Donated${to} — no verdict by deadline` : `Donation${to} pending — no verdict by deadline`;
+    }
+  }
 }
 
 /** Alias for the relayer sport union (see {@link Sport}). */

@@ -118,6 +118,24 @@ export interface BetDoc {
   fallbackDest?: string;
   /** Charity display name, when fallbackKind === "charity". */
   charityName?: string;
+  /**
+   * On-chain account type backing an escrowed bet. "social" = SocialBet
+   * (escrow_bet/settle_social, fallback enforced on-chain); "sports" = SportsBet
+   * (createBet/acceptBet/settleBet). Missing on legacy docs, which are "sports".
+   */
+  onChainKind?: "social" | "sports";
+  /** Unpaid fallback the crank committed to (set atomically before the on-chain settle). */
+  fallbackApplied?: "return" | "burn" | "charity";
+  /** Unix ms when the crank committed to the fallback (or to blocking it). */
+  fallbackAppliedAt?: number;
+  /**
+   * Legacy SportsBet witness bet whose burn/charity fallback cannot be executed on-chain
+   * (SportsBet can only pay the two participants). Funds stay escrowed for an operator.
+   */
+  fallbackBlocked?: boolean;
+  fallbackBlockedReason?: string;
+  /** Unaccepted witness offer whose accept-by (or resolve-by) deadline passed. Nothing was escrowed. */
+  offerExpired?: boolean;
 }
 
 export interface ProfileDoc {
