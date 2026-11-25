@@ -2217,6 +2217,12 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
+      // The resolve-by date is a hard voting deadline; after it the crank applies
+      // the precommitted fallback instead.
+      if (typeof current.resolveByDate === "number" && Date.now() >= current.resolveByDate) {
+        return json(res, 409, { error: "the resolve-by date has passed; voting is closed", bet: current });
+      }
+
       const nextVotesByVoter: Record<string, BetVoteChoice> = {
         ...current.votesByVoter,
         [voter]: votedFor,
@@ -2233,8 +2239,15 @@ const server = http.createServer(async (req, res) => {
         ? "COMPLETED"
         : current.status;
 
-      await col.updateOne(
-        { id: betId },
+      // Conditional write: never overwrite a bet that completed or had its fallback
+      // claimed by the crank after we read it.
+      const voteWrite = await col.updateOne(
+        {
+          id: betId,
+          status: "ACTIVE",
+          fallbackApplied: { $exists: false },
+          fallbackBlocked: { $exists: false },
+        },
         {
           $set: {
             votesByVoter: nextVotesByVoter,
@@ -2243,8 +2256,15 @@ const server = http.createServer(async (req, res) => {
           },
         },
       );
+      if (voteWrite.matchedCount === 0) {
+        const latest = await col.findOne({ id: betId }, { projection: { _id: 0 } });
+        return json(res, 409, {
+          error: "this bet was resolved before your vote was recorded",
+          ...(latest ? { bet: normalizeBetDoc(latest) } : {}),
+        });
+      }
       if (!winner && current.resolvedWinner) {
-        await col.updateOne({ id: betId }, { $unset: { resolvedWinner: "" } });
+        await col.updateOne({ id: betId, status: "ACTIVE" }, { $unset: { resolvedWinner: "" } });
       }
 
       const updated = await col.findOne({ id: betId }, { projection: { _id: 0 } });
