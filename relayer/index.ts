@@ -1983,7 +1983,9 @@ const server = http.createServer(async (req, res) => {
         ) {
           return json(res, 409, { error: "The game list changed. Refresh and pick the game again." });
         }
-        const chainNowSec = await currentUnixTimeSec();
+        // Points bets never touch the chain, so they use wall-clock time (no RPC round trip
+        // that can fail under devnet rate limits).
+        const chainNowSec = isPoints ? Math.floor(Date.now() / 1000) : await currentUnixTimeSec();
         const kickoffSec = Math.floor(selectedGame.startTimeMs / 1000);
         if (kickoffSec <= chainNowSec) {
           return json(res, 400, { error: "selected game has already started" });

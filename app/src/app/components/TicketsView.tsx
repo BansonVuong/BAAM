@@ -5,7 +5,6 @@ import { useBaamData } from "../data";
 import { Button, EmptyState, ScreenTitle } from "./primitives";
 import { BetTicket, bucketForBet, type TicketBucket } from "./ticket/BetTicket";
 import { useBetActions } from "./ticket/useBetActions";
-import { TicketSheet } from "./ticket/TicketSheet";
 
 const SECTIONS: { bucket: TicketBucket; title: string; hint: string }[] = [
   { bucket: "needs-you", title: "Needs you", hint: "Accept a challenge or cast your vote." },
@@ -47,7 +46,6 @@ export function TicketsView({
   const { handlers, dialogs } = useBetActions();
   const mine = useMyBets();
   const [showAllSettled, setShowAllSettled] = useState(false);
-  const [sheetBetId, setSheetBetId] = useState<string | null>(null);
   const groupName = (bet: Bet) => {
     const id = bet.groupId ?? betGroupIds[bet.id];
     return id ? groups.find((g) => g.id === id)?.name : undefined;
@@ -56,7 +54,6 @@ export function TicketsView({
     const id = bet.groupId ?? betGroupIds[bet.id];
     return id && groups.some((g) => g.id === id) ? id : null;
   };
-  const sheetBet = mine.find((entry) => entry.bet.id === sheetBetId)?.bet ?? null;
 
   return (
     <div className="max-w-[760px] px-4 py-5 lg:px-10 lg:py-8">
@@ -99,8 +96,8 @@ export function TicketsView({
                       variant={settled ? "compact" : "full"}
                       context={groupName(bet)}
                       onOpen={settled
-                        ? () => setSheetBetId(bet.id)
-                        : groupId ? () => onOpenBetChat(groupId, bet.id) : undefined}
+                        ? () => handlers.openDetails?.(bet)
+                        : groupId ? () => onOpenBetChat(groupId, bet.id) : () => handlers.openDetails?.(bet)}
                       openLabel={settled ? `Open bet: ${bet.terms}` : `Open in ${groupName(bet) ?? "chat"}: ${bet.terms}`}
                     />
                   </li>
@@ -116,16 +113,6 @@ export function TicketsView({
         );
       })}
 
-      <TicketSheet
-        bet={sheetBet}
-        viewer={user.username}
-        handlers={handlers}
-        groupName={sheetBet ? groupName(sheetBet) : undefined}
-        onOpenChat={sheetBet && groupIdFor(sheetBet)
-          ? () => { const id = groupIdFor(sheetBet)!; setSheetBetId(null); onOpenBetChat(id, sheetBet.id); }
-          : undefined}
-        onClose={() => setSheetBetId(null)}
-      />
       {dialogs}
     </div>
   );

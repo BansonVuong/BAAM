@@ -1,8 +1,9 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { MessageCircle, Medal, Ticket as TicketIcon, Volleyball, type LucideIcon } from "lucide-react";
 import {
   AUTH_TOKEN_STORAGE_KEY,
   DISCORD_ENABLED,
+  getBet,
   getCurrentAuthUser,
   linkDiscord,
   type AuthResult,
@@ -20,7 +21,9 @@ import { ChatView } from "./components/chat/ChatView";
 import { TicketsView, useMyBets } from "./components/TicketsView";
 import { SportsView } from "./components/SportsView";
 import { StandingsView } from "./components/StandingsView";
-import { Button, CountBadge, EmptyState, ScreenTitle, buttonClass } from "./components/primitives";
+import { Button, CountBadge, EmptyState, ScreenTitle, Sheet, buttonClass } from "./components/primitives";
+import { BetOverlays } from "./components/shell/BetOverlays";
+import { ProfileSheet } from "./components/people/ProfileSheet";
 
 // Dev-only fixtures page (/?preview=tickets). Stripped from production builds.
 const TicketPreview = import.meta.env.DEV
@@ -69,12 +72,27 @@ function useIsDesktop(): boolean {
 
 /* ── Signed-in shell ────────────────────────────────────────────────────── */
 
-function Shell({ theme, onToggleTheme, onSignOut }: {
+/** Remove `?bet=` from the address bar once it's been handled. */
+function stripBetParam(): void {
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has("bet")) return;
+  params.delete("bet");
+  const query = params.toString();
+  window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+}
+
+function Shell({ theme, onToggleTheme, onSignOut, linkedBetId }: {
   theme: Theme;
   onToggleTheme: () => void;
   onSignOut: () => void;
+  /** `?bet=<id>` deep link (iMessage: Add proof, Check in, Review). */
+  linkedBetId: string | null;
 }) {
-  const { groups, loaded, totalUnread } = useBaamData();
+  const { groups, loaded, totalUnread, betGroupIds, upsertBet, openDetails } = useBaamData();
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const handledLinkRef = useRef<string | null>(null);
+  const linkContextRef = useRef({ groups, betGroupIds });
+  linkContextRef.current = { groups, betGroupIds };
   const isDesktop = useIsDesktop();
   const [view, setView] = useState<ViewId>("chats");
   const [groupId, setGroupId] = useState<string | null>(null);
@@ -101,6 +119,31 @@ function Shell({ theme, onToggleTheme, onSignOut }: {
     setView("chats");
     setFocusRequest((prev) => ({ betId, token: (prev?.token ?? 0) + 1 }));
   }, []);
+
+  // Deep link: load the bet, go to its chat (or Tickets), open its full ticket.
+  useEffect(() => {
+    if (!linkedBetId || !loaded || handledLinkRef.current === linkedBetId) return;
+    handledLinkRef.current = linkedBetId;
+    getBet(linkedBetId)
+      .then(({ bet }) => {
+        upsertBet(bet);
+        const id = bet.groupId ?? linkContextRef.current.betGroupIds[bet.id];
+        if (id && linkContextRef.current.groups.some((g) => g.id === id)) {
+          setGroupId(id);
+          setView("chats");
+        } else {
+          setView("tickets");
+        }
+        openDetails(bet.id);
+      })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : "";
+        setLinkError(/not found|only participants|forbidden|403|404/i.test(message)
+          ? "You can only open bets you're in, or bets from chats you're a member of. Ask a friend to add you to the group."
+          : friendlyError(err, "Couldn't open that bet right now. Try again in a minute."));
+      })
+      .finally(stripBetParam);
+  }, [linkedBetId, loaded, upsertBet, openDetails]);
 
   const goToChats = useCallback(() => setView("chats"), []);
   const badges: Partial<Record<ViewId, { count: number; label: string }>> = {
@@ -226,7 +269,7 @@ function Shell({ theme, onToggleTheme, onSignOut }: {
           </main>
           {isDesktop && view === "chats" && groupId && (
             <div className="hidden w-[320px] shrink-0 border-l border-rule xl:block">
-              <YourTicketsRail onOpenBetChat={openBetInChat} onSeeAll={() => setView("tickets")} />
+              <YourTicketsRail onSeeAll={() => setView("tickets")} />
             </div>
           )}
         </div>
@@ -268,6 +311,17 @@ function Shell({ theme, onToggleTheme, onSignOut }: {
           </nav>
         )}
       </div>
+
+      <BetOverlays onOpenBetChat={openBetInChat} openChatId={view === "chats" ? groupId : null} />
+      <ProfileSheet />
+      <Sheet
+        open={Boolean(linkError)}
+        onOpenChange={(open) => { if (!open) setLinkError(null); }}
+        size="sm"
+        title="Can't open that bet"
+        description={linkError ?? undefined}
+        footer={<Button variant="primary" onClick={() => setLinkError(null)}>OK</Button>}
+      />
     </div>
   );
 }
@@ -328,6 +382,8 @@ export default function App() {
   const [discordLinkError, setDiscordLinkError] = useState<string | null>(null);
 
   const preview = import.meta.env.DEV ? new URLSearchParams(window.location.search).get("preview") : null;
+  // Kept in the address bar through sign-in; the shell strips it once handled.
+  const [linkedBetId] = useState(() => new URLSearchParams(window.location.search).get("bet")?.trim() || null);
 
   /* Capture a Discord link code (?discord_link=...) and strip it from the address bar. */
   useEffect(() => {
@@ -439,7 +495,7 @@ export default function App() {
 
   return (
     <DataProvider key={authUser.id} user={authUser}>
-      <Shell theme={theme} onToggleTheme={toggleTheme} onSignOut={signOut} />
+      <Shell theme={theme} onToggleTheme={toggleTheme} onSignOut={signOut} linkedBetId={linkedBetId} />
     </DataProvider>
   );
 }

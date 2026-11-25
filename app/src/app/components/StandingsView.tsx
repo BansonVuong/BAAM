@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  getLeaderboard,
+  getLeaderboardByCurrency,
   type Bet,
+  type BetCurrency,
   type DiscordLeaderboardServer,
   type Player,
 } from "../../lib/relayer";
@@ -19,6 +20,7 @@ import {
 import { cn } from "../../lib/cn";
 import { useBaamData } from "../data";
 import { Button, EmptyState, ScreenTitle, Segmented } from "./primitives";
+import { useBetCurrency } from "./CurrencyFields";
 
 const ALL = "__all__";
 const DISCORD_PREFIX = "discord:";
@@ -28,10 +30,13 @@ interface Standing {
   name: string;
   wins: number;
   losses: number;
+  /** SOL: net winnings from settled bets (null = unknown for legacy rows). */
   net: number | null;
+  /** PTS: current points balance. */
+  points?: number;
 }
 
-function standingsFromBets(bets: Bet[]): Standing[] {
+export function standingsFromBets(bets: Bet[], currency: BetCurrency): Standing[] {
   const byKey = new Map<string, Standing>();
   const ensure = (name: string): Standing | null => {
     const key = normalizeName(name);
@@ -44,7 +49,7 @@ function standingsFromBets(bets: Bet[]): Standing[] {
     return entry;
   };
   const settled = bets
-    .filter((bet) => isBetCompleted(bet) && betCurrency(bet) === "SOL")
+    .filter((bet) => isBetCompleted(bet) && betCurrency(bet) === currency)
     .sort((a, b) => betTimestamp(a) - betTimestamp(b));
   for (const bet of settled) {
     const winner = getResolvedWinner(bet);
@@ -76,13 +81,29 @@ function standingsFromPlayers(players: Player[]): Standing[] {
     .sort((a, b) => b.wins - a.wins || a.losses - b.losses || a.name.localeCompare(b.name));
 }
 
+/** Points standings: the server ranks by balance; keep its order. */
+function pointsStandings(players: Array<Player & { points?: number }>, include: Set<string> | null): Standing[] {
+  return players
+    .filter((player) => !include || include.has(normalizeName(player.github || player.name)))
+    .map((player) => ({
+      key: normalizeName(player.github || player.name),
+      name: player.github || player.name,
+      wins: player.wins,
+      losses: Math.max(0, player.disputes - player.wins),
+      net: null,
+      points: player.points ?? 0,
+    }));
+}
+
 export function StandingsView({ onOpenGroup, onGoToChats }: {
   onOpenGroup: (groupId: string) => void;
   onGoToChats: () => void;
 }) {
-  const { user, groups, bets, betGroupIds, loaded } = useBaamData();
+  const { user, groups, bets, betGroupIds, loaded, openProfile } = useBaamData();
   const [scope, setScope] = useState<string>(ALL);
-  const [players, setPlayers] = useState<Player[]>([]);
+  const { options: allowed, currency, setCurrency } = useBetCurrency();
+  const [players, setPlayers] = useState<Array<Player & { points?: number }>>([]);
+  const [playersCurrency, setPlayersCurrency] = useState<BetCurrency | null>(null);
   const [discordServers, setDiscordServers] = useState<DiscordLeaderboardServer[]>([]);
   const [discordBets, setDiscordBets] = useState<Bet[]>([]);
 
@@ -91,10 +112,11 @@ export function StandingsView({ onOpenGroup, onGoToChats }: {
   useEffect(() => {
     let alive = true;
     const load = () => {
-      getLeaderboard(discordGuildId)
+      getLeaderboardByCurrency(currency, discordGuildId)
         .then((result) => {
           if (!alive) return;
           setPlayers(result.players);
+          setPlayersCurrency(result.currency);
           setDiscordServers(result.discordServers);
           setDiscordBets(result.bets ?? []);
         })
@@ -103,7 +125,7 @@ export function StandingsView({ onOpenGroup, onGoToChats }: {
     load();
     const interval = window.setInterval(load, 10_000);
     return () => { alive = false; window.clearInterval(interval); };
-  }, [discordGuildId]);
+  }, [discordGuildId, currency]);
 
   useEffect(() => {
     const valid = scope === ALL
@@ -113,9 +135,8 @@ export function StandingsView({ onOpenGroup, onGoToChats }: {
   }, [scope, groups, discordServers, loaded]);
 
   const group = groups.find((g) => g.id === scope) ?? null;
-  const scopeName = group?.name
-    ?? discordServers.find((s) => `${DISCORD_PREFIX}${s.id}` === scope)?.name
-    ?? null;
+  const discordServer = discordServers.find((s) => `${DISCORD_PREFIX}${s.id}` === scope) ?? null;
+  const scopeName = group?.name ?? discordServer?.name ?? null;
 
   const scopedBets = useMemo(() => {
     if (discordGuildId) return discordBets;
@@ -124,10 +145,19 @@ export function StandingsView({ onOpenGroup, onGoToChats }: {
   }, [scope, discordGuildId, discordBets, bets, betGroupIds]);
 
   const standings = useMemo(() => {
-    const fromBets = standingsFromBets(scopedBets);
+    if (currency === "PTS") {
+      if (playersCurrency !== "PTS") return [];
+      // Balances are global; show people you share a chat with (or the chosen group/server).
+      const names = group?.memberUsernames
+        ?? discordServer?.memberUsernames
+        ?? [user.username, ...groups.flatMap((g) => g.memberUsernames ?? [])];
+      const include = new Set(names.map(normalizeName));
+      return pointsStandings(players, include);
+    }
+    const fromBets = standingsFromBets(scopedBets, "SOL");
     if (fromBets.length > 0 || group) return fromBets;
-    return standingsFromPlayers(players);
-  }, [scopedBets, players, group]);
+    return playersCurrency === "SOL" ? standingsFromPlayers(players) : [];
+  }, [currency, playersCurrency, scopedBets, players, group, discordServer, groups, user.username]);
 
   const unranked = useMemo(() => {
     if (!group?.memberUsernames) return [];
@@ -140,15 +170,29 @@ export function StandingsView({ onOpenGroup, onGoToChats }: {
     ...discordServers.map((server) => ({ value: `${DISCORD_PREFIX}${server.id}`, label: server.name })),
     ...groups.map((g) => ({ value: g.id, label: g.name })),
   ];
+  const points = currency === "PTS";
 
   return (
     <div className="max-w-[760px] px-4 py-5 lg:px-10 lg:py-8">
       <div className="hidden lg:block">
         <ScreenTitle>Standings</ScreenTitle>
-        <p className="mt-1 text-label text-ink-soft">Ranked by net winnings from settled bets.</p>
+        <p className="mt-1 text-label text-ink-soft">
+          {points ? "Ranked by points balance." : "Ranked by net winnings from settled bets."}
+        </p>
       </div>
 
-      <div className="-mx-4 overflow-x-auto px-4 pb-1 lg:mx-0 lg:mt-6 lg:px-0">
+      {allowed.length > 1 && (
+        <Segmented
+          label="Rank by"
+          value={currency}
+          onChange={setCurrency}
+          size="sm"
+          className="mb-3 lg:mt-6"
+          options={allowed.map((option) => ({ value: option, label: option === "PTS" ? "Points" : "SOL" }))}
+        />
+      )}
+
+      <div className={cn("-mx-4 overflow-x-auto px-4 pb-1 lg:mx-0 lg:px-0", allowed.length > 1 ? "" : "lg:mt-6")}>
         <Segmented
           label="Show standings for"
           value={scope}
@@ -161,14 +205,18 @@ export function StandingsView({ onOpenGroup, onGoToChats }: {
 
       {standings.length === 0 ? (
         <EmptyState
-          title={scopeName ? `No settled bets in ${scopeName} yet.` : "No settled bets yet."}
-          body="Standings fill in as bets settle. Start one in a chat with New bet."
+          title={points
+            ? "No one to rank yet."
+            : scopeName ? `No settled bets in ${scopeName} yet.` : "No settled bets yet."}
+          body={points
+            ? "Points standings show everyone you share a chat with. Invite friends to a group."
+            : "Standings fill in as bets settle. Start one in a chat with New bet."}
           action={group
             ? <Button variant="primary" onClick={() => onOpenGroup(group.id)}>Open {group.name}</Button>
             : <Button variant="primary" onClick={onGoToChats}>Go to chats</Button>}
         />
       ) : (
-        <ol className="mt-5 overflow-hidden rounded-[20px] bg-paper" aria-label="Standings">
+        <ol className="mt-5 overflow-hidden rounded-[20px] bg-paper" aria-label={points ? "Points standings" : "SOL standings"}>
           {standings.map((entry, index) => {
             const you = sameName(entry.name, user.username);
             const settledCount = entry.wins + entry.losses;
@@ -183,19 +231,26 @@ export function StandingsView({ onOpenGroup, onGoToChats }: {
               >
                 <span className="text-[28px] font-extrabold leading-none wdth-condensed tabular-nums">{index + 1}</span>
                 <span className="min-w-0">
-                  <span className="block truncate text-label font-semibold">
+                  <button
+                    type="button"
+                    onClick={() => openProfile(entry.name)}
+                    className="block max-w-full truncate rounded-sm text-left text-label font-semibold hover:underline hover:underline-offset-4"
+                    aria-label={you ? "Your record" : `See ${entry.name}'s record`}
+                  >
                     {entry.name}{you && <span className="font-normal text-ink-soft"> (you)</span>}
-                  </span>
+                  </button>
                   <span className="block text-meta text-ink-soft sm:hidden">
                     {entry.wins} won, {entry.losses} lost
                   </span>
                 </span>
                 <span className="hidden text-label sm:block">
                   {entry.wins}–{entry.losses}
-                  <span className="ml-2 text-meta text-ink-soft">{rate}%</span>
+                  {settledCount > 0 && <span className="ml-2 text-meta text-ink-soft">{rate}%</span>}
                 </span>
                 <span className="text-right text-label font-semibold tabular-nums">
-                  {entry.net === null ? "—" : formatSignedMoney(entry.net, "SOL")}
+                  {points
+                    ? `${(entry.points ?? 0).toLocaleString()} pts`
+                    : entry.net === null ? "—" : formatSignedMoney(entry.net, "SOL")}
                 </span>
               </li>
             );

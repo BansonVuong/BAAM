@@ -28,20 +28,27 @@ export interface TicketAction {
   pressed?: boolean;
 }
 
-/** Slot for photo/video/link proof (upcoming). */
+/** Slot for photo/link proof: a thumbnail plus a count. */
 export interface TicketProof {
   href?: string;
   thumbnailUrl?: string;
+  /** Alt text for the thumbnail: the caption, or "Proof from <user>". */
+  thumbnailAlt?: string;
   /** Defaults to "View proof". */
   label?: string;
+  /** Opens the full ticket (proof gallery) instead of following `href`. */
+  onOpen?: () => void;
 }
 
-/** Slot for recurring check-ins (upcoming), e.g. 3 of 5 days done. */
+/** Slot for recurring check-ins, e.g. 3 of 5 days done. */
 export interface TicketCheckIn {
   done: number;
   total: number;
   /** Defaults to "{done} of {total} days done". */
   label?: string;
+  /** Opens the full ticket (the day-by-day strip). */
+  onOpen?: () => void;
+  openLabel?: string;
 }
 
 export interface TicketLink {
@@ -63,6 +70,9 @@ export interface TicketProps {
   context?: string;
   /** "jordan vs maya". */
   parties?: string;
+  /** Names inside `parties` that open that person's record when tapped. */
+  people?: string[];
+  onOpenPerson?: (name: string) => void;
   /** Plain-word detail lines: witnesses, deadlines, fallback. */
   details?: string[];
   /** One status line in plain words: "Waiting for maya to accept". */
@@ -184,19 +194,42 @@ function CheckInProgress({ checkIn }: { checkIn: TicketCheckIn }) {
   const total = Math.max(1, Math.floor(checkIn.total));
   const done = Math.min(total, Math.max(0, Math.floor(checkIn.done)));
   const label = checkIn.label ?? `${done} of ${total} days done`;
+  const bar = (
+    <span className="flex gap-1" role="img" aria-label={label}>
+      {Array.from({ length: total }, (_, index) => (
+        <span
+          key={index}
+          className={cn(
+            "h-2 flex-1 rounded-full",
+            index < done ? "bg-ticket-ink" : "bg-ticket-ink/15",
+          )}
+        />
+      ))}
+    </span>
+  );
+  if (checkIn.onOpen) {
+    return (
+      <button
+        type="button"
+        onClick={checkIn.onOpen}
+        className="group mt-3 block w-full rounded-md text-left"
+        aria-label={checkIn.openLabel ? `${label}. ${checkIn.openLabel}` : label}
+      >
+        {bar}
+        <span className="mt-1.5 block text-meta text-ticket-ink-soft">
+          {label}
+          {checkIn.openLabel && (
+            <span className="ml-2 font-semibold text-ticket-ink underline decoration-ticket-ink/35 underline-offset-4 group-hover:decoration-ticket-ink">
+              {checkIn.openLabel}
+            </span>
+          )}
+        </span>
+      </button>
+    );
+  }
   return (
     <div className="mt-3">
-      <div className="flex gap-1" role="img" aria-label={label}>
-        {Array.from({ length: total }, (_, index) => (
-          <span
-            key={index}
-            className={cn(
-              "h-2 flex-1 rounded-full",
-              index < done ? "bg-ticket-ink" : "bg-ticket-ink/15",
-            )}
-          />
-        ))}
-      </div>
+      {bar}
       <p className="mt-1.5 text-meta text-ticket-ink-soft">{label}</p>
     </div>
   );
@@ -207,7 +240,11 @@ function ProofSlot({ proof }: { proof: TicketProof }) {
   const body = (
     <>
       {proof.thumbnailUrl ? (
-        <img src={proof.thumbnailUrl} alt="" className="size-12 rounded-md object-cover ring-1 ring-ticket-ink/15" />
+        <img
+          src={proof.thumbnailUrl}
+          alt={proof.thumbnailAlt ?? ""}
+          className="size-12 rounded-md object-cover ring-1 ring-ticket-ink/15"
+        />
       ) : (
         <span className="flex size-12 items-center justify-center rounded-md bg-ticket-ink/10">
           <ImageIcon size={18} aria-hidden />
@@ -216,6 +253,13 @@ function ProofSlot({ proof }: { proof: TicketProof }) {
       <span className="text-label font-semibold underline decoration-ticket-ink/40 underline-offset-4">{label}</span>
     </>
   );
+  if (proof.onOpen) {
+    return (
+      <button type="button" onClick={proof.onOpen} className="mt-3 flex w-fit items-center gap-3 rounded-md text-left">
+        {body}
+      </button>
+    );
+  }
   if (!proof.href) return <div className="mt-3 flex items-center gap-3">{body}</div>;
   return (
     <a href={proof.href} target="_blank" rel="noreferrer" className="mt-3 flex w-fit items-center gap-3 rounded-md">
@@ -256,6 +300,53 @@ function ActionButton({ action }: { action: TicketAction }) {
   );
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Split "jordan vs maya" into plain text and tappable names. */
+export function splitParties(parties: string, people: string[]): { text: string; person?: string }[] {
+  const names = [...new Set(people.filter((name) => {
+    const key = name.trim().toLowerCase();
+    return key && key !== "you" && key !== "anyone";
+  }))].sort((a, b) => b.length - a.length);
+  if (names.length === 0) return [{ text: parties }];
+  const pattern = new RegExp(`(^|[^\\w])(${names.map(escapeRegExp).join("|")})(?=$|[^\\w])`, "g");
+  const out: { text: string; person?: string }[] = [];
+  let last = 0;
+  for (const match of parties.matchAll(pattern)) {
+    const start = (match.index ?? 0) + match[1]!.length;
+    if (start > last) out.push({ text: parties.slice(last, start) });
+    out.push({ text: match[2]!, person: match[2]! });
+    last = start + match[2]!.length;
+  }
+  if (last < parties.length) out.push({ text: parties.slice(last) });
+  return out;
+}
+
+function Parties({ parties, people, onOpenPerson }: {
+  parties: string;
+  people?: string[];
+  onOpenPerson?: (name: string) => void;
+}) {
+  if (!onOpenPerson || !people?.length) return <p className="mt-2 text-label font-medium">{parties}</p>;
+  return (
+    <p className="mt-2 text-label font-medium">
+      {splitParties(parties, people).map((part, index) => (part.person ? (
+        <button
+          key={index}
+          type="button"
+          onClick={() => onOpenPerson(part.person!)}
+          className="rounded-sm underline decoration-ticket-ink/30 underline-offset-4 hover:decoration-ticket-ink"
+          aria-label={`See ${part.person}'s record`}
+        >
+          {part.text}
+        </button>
+      ) : <span key={index}>{part.text}</span>))}
+    </p>
+  );
+}
+
 function stakeSizeClass(stake: string, compact: boolean): string {
   const length = stake.replace(/[^\d.]/g, "").length;
   if (compact) return length > 5 ? "text-[22px] leading-[22px]" : "text-[28px] leading-[28px]";
@@ -275,6 +366,8 @@ export function Ticket({
   currency,
   context,
   parties,
+  people,
+  onOpenPerson,
   details,
   status,
   stamp,
@@ -363,7 +456,7 @@ export function Ticket({
           ) : (
             <p className="text-terms font-semibold break-words">{terms}</p>
           )}
-          {parties && <p className="mt-2 text-label font-medium">{parties}</p>}
+          {parties && <Parties parties={parties} people={people} onOpenPerson={onOpenPerson} />}
           {details && details.length > 0 && (
             <div className="mt-0.5 space-y-0.5">
               {details.map((line) => (

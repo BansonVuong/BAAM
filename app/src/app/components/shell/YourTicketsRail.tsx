@@ -1,35 +1,19 @@
-import { useState } from "react";
 import { useBaamData } from "../../data";
 import { BetTicket } from "../ticket/BetTicket";
-import { TicketSheet } from "../ticket/TicketSheet";
-import { useBetActions } from "../ticket/useBetActions";
 import { useMyBets } from "../TicketsView";
 
 const ORDER = { "needs-you": 0, verdict: 1, live: 2, offer: 3, done: 4 } as const;
 
 /** Desktop right rail beside the chat: your unsettled tickets, most urgent first. */
-export function YourTicketsRail({
-  onOpenBetChat,
-  onSeeAll,
-}: {
-  onOpenBetChat: (groupId: string, betId: string) => void;
-  onSeeAll: () => void;
-}) {
-  const { user, groups, betGroupIds } = useBaamData();
-  const { handlers, dialogs } = useBetActions();
-  const [sheetBetId, setSheetBetId] = useState<string | null>(null);
+export function YourTicketsRail({ onSeeAll }: { onSeeAll: () => void }) {
+  const { user, groups, betGroupIds, openDetails } = useBaamData();
   const open = useMyBets()
     .filter((entry) => entry.bucket !== "done")
     .sort((a, b) => ORDER[a.bucket] - ORDER[b.bucket]);
-  const groupIdFor = (betId: string, groupId?: string) => {
-    const id = groupId ?? betGroupIds[betId];
-    return id && groups.some((g) => g.id === id) ? id : null;
-  };
   const groupNameFor = (betId: string, groupId?: string) => {
-    const id = groupIdFor(betId, groupId);
+    const id = groupId ?? betGroupIds[betId];
     return id ? groups.find((g) => g.id === id)?.name : undefined;
   };
-  const sheetBet = open.find((entry) => entry.bet.id === sheetBetId)?.bet ?? null;
 
   return (
     <aside className="flex h-full min-h-0 flex-col bg-paper" aria-labelledby="rail-tickets">
@@ -57,7 +41,7 @@ export function YourTicketsRail({
                       viewer={user.username}
                       variant="compact"
                       context={groupNameFor(bet.id, bet.groupId)}
-                      onOpen={() => setSheetBetId(bet.id)}
+                      onOpen={() => openDetails(bet.id)}
                     />
                   </li>
                 ))}
@@ -66,21 +50,6 @@ export function YourTicketsRail({
           ))
         )}
       </div>
-      <TicketSheet
-        bet={sheetBet}
-        viewer={user.username}
-        handlers={handlers}
-        groupName={sheetBet ? groupNameFor(sheetBet.id, sheetBet.groupId) : undefined}
-        onOpenChat={sheetBet && groupIdFor(sheetBet.id, sheetBet.groupId)
-          ? () => {
-              const id = groupIdFor(sheetBet.id, sheetBet.groupId)!;
-              setSheetBetId(null);
-              onOpenBetChat(id, sheetBet.id);
-            }
-          : undefined}
-        onClose={() => setSheetBetId(null)}
-      />
-      {dialogs}
     </aside>
   );
 }

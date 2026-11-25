@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Minus, Plus } from "lucide-react";
-import type { Bet, ScoreboardGame, SportKind } from "../../lib/relayer";
+import type { Bet, BetCurrency, BetSchedule, BetVoteChoice, ScoreboardGame, SportKind } from "../../lib/relayer";
 import { friendlyError, sameName } from "../../lib/bets";
 import { cn } from "../../lib/cn";
+import { normalizeStake, stakeError } from "../../lib/stake";
+import { checkScheduleDraft, draftToSchedule } from "../../lib/schedule";
+import { CurrencyPicker, StakeInput, useBetCurrency } from "./CurrencyFields";
+import { HabitFields, initialHabit, type HabitState } from "./HabitFields";
 import {
   Button,
   Field,
@@ -28,7 +32,7 @@ export interface NewBet {
   acceptor: string;
   terms: string;
   stake: string;
-  currency: "SOL";
+  currency: BetCurrency;
   // Witness bets
   witnesses?: number;
   acceptByDate?: number | null;
@@ -42,6 +46,8 @@ export interface NewBet {
   backsHome?: boolean;
   homeTeam?: string;
   awayTeam?: string;
+  // Recurring check-in bets ("Make it a habit"); the relayer sets the verdict deadline.
+  habit?: { schedule: BetSchedule; requiredCheckins: number; doer: BetVoteChoice };
 }
 
 const TERMS_MIN = 8;
@@ -119,6 +125,9 @@ export function NewBetSheet({
   const [attempted, setAttempted] = useState(false);
   const [posting, setPosting] = useState(false);
   const [postError, setPostError] = useState<string | null>(null);
+  const [habitOn, setHabitOn] = useState(false);
+  const [habit, setHabit] = useState<HabitState>(initialHabit);
+  const { options: currencyOptions, currency, setCurrency } = useBetCurrency(open);
   const termsRef = useRef<HTMLTextAreaElement>(null);
 
   const isSports = type === "DEV";
@@ -130,6 +139,7 @@ export function NewBetSheet({
     resolveBy: useFieldId("resolve-by"),
     charityName: useFieldId("charity-name"),
     charityAddress: useFieldId("charity-address"),
+    habitLabel: useFieldId("habit-label"),
   };
 
   const memberOptions = useMemo(() => {
@@ -153,6 +163,7 @@ export function NewBetSheet({
       setFallbackKind("return"); setCharityName(""); setCharityAddress("");
       setSport("nba"); setGame(null); setBacksHome(true);
       setAttempted(false); setPosting(false); setPostError(null);
+      setHabitOn(false); setHabit(initialHabit());
     }, 250);
     return () => window.clearTimeout(timer);
   }, [open, memberCount]);
@@ -166,6 +177,8 @@ export function NewBetSheet({
   }, [acceptor, memberOptions]);
 
   useEffect(() => { setGame(null); }, [sport]);
+  // Points have no cash value, so there's no charity fallback for them.
+  useEffect(() => { if (currency === "PTS" && fallbackKind === "charity") setFallbackKind("return"); }, [currency, fallbackKind]);
 
   const backedTeam = game ? (backsHome ? game.homeTeam : game.awayTeam) : "";
   const sportsTerms = game
@@ -177,6 +190,9 @@ export function NewBetSheet({
 
   const errors: Errors = {};
   const now = Date.now();
+  const isHabit = !isSports && habitOn;
+  const habitCheck = checkScheduleDraft(habit.draft, now);
+  const habitErrors = isHabit ? habitCheck.errors : {};
   if (isSports) {
     if (!game) errors.game = "Pick a game.";
   } else {
@@ -186,18 +202,20 @@ export function NewBetSheet({
     if (!Number.isInteger(witnesses) || witnesses < limits.min || witnesses > limits.max) {
       errors.witnesses = `Pick between ${limits.min} and ${limits.max}.`;
     }
-    if (resolveByMs === null || resolveByMs <= now) errors.resolveBy = "Pick a time in the future.";
+    if (!isHabit && (resolveByMs === null || resolveByMs <= now)) errors.resolveBy = "Pick a time in the future.";
     if (acceptByMode === "date") {
       if (acceptByMs === null || acceptByMs <= now) errors.acceptBy = "Pick a time in the future.";
-      else if (resolveByMs !== null && acceptByMs > resolveByMs) errors.acceptBy = "Must be on or before the decide-by time.";
+      else if (!isHabit && resolveByMs !== null && acceptByMs > resolveByMs) errors.acceptBy = "Must be on or before the decide-by time.";
     }
-    if (fallbackKind === "charity" && !SOLANA_ADDRESS.test(charityAddress.trim())) {
+    if (currency === "SOL" && fallbackKind === "charity" && !SOLANA_ADDRESS.test(charityAddress.trim())) {
       errors.charityAddress = "Paste the charity's Solana wallet address.";
     }
   }
-  const stakeNumber = Number(stake);
-  if (!stake.trim() || !Number.isFinite(stakeNumber) || stakeNumber <= 0) errors.stake = "Enter an amount above 0.";
-  const valid = Object.keys(errors).length === 0;
+  const stakeProblem = stakeError(stake, currency);
+  if (stakeProblem) errors.stake = stakeProblem;
+  const valid = Object.keys(errors).length === 0 && Object.keys(habitErrors).length === 0;
+  const habitSchedule = isHabit ? draftToSchedule(habit.draft) : null;
+  const acceptorLabel = acceptor === "anyone" ? "Whoever accepts" : acceptor;
   const show = (key: keyof Errors) => (attempted ? errors[key] : undefined);
 
   const previewBet: Bet = {
@@ -206,8 +224,8 @@ export function NewBetSheet({
     challenger: viewer,
     acceptor,
     terms: isSports ? sportsTerms || "Pick a game" : terms.trim() || "What's the bet?",
-    stake: stake.trim() || "0",
-    currency: "SOL",
+    stake: normalizeStake(stake, currency) || "0",
+    currency,
     status: "PENDING",
     witnesses,
     minBettors: 2,
@@ -215,10 +233,13 @@ export function NewBetSheet({
     ...(isSports
       ? { validation: "sports" as const, sport, homeTeam: game?.homeTeam, awayTeam: game?.awayTeam, challengerBacksHome: backsHome }
       : {
-          resolveByDate: resolveByMs ?? undefined,
+          resolveByDate: isHabit ? undefined : resolveByMs ?? undefined,
           acceptByDate: acceptByMs,
           fallbackKind,
           charityName: charityName.trim() || undefined,
+          ...(habitSchedule
+            ? { schedule: habitSchedule, requiredCheckins: habitCheck.required, doer: habit.doer }
+            : {}),
         }),
   };
   const preview = describeBet(previewBet, viewer);
@@ -236,17 +257,20 @@ export function NewBetSheet({
         type,
         acceptor,
         terms: isSports ? sportsTerms : terms.trim(),
-        stake: stake.trim(),
-        currency: "SOL",
+        stake: normalizeStake(stake, currency),
+        currency,
         ...(isSports && game
           ? { sport, gameId: game.gameId, backsHome, homeTeam: game.homeTeam, awayTeam: game.awayTeam }
           : {
               witnesses,
               acceptByDate: acceptByMs,
-              resolveByDate: resolveByMs ?? undefined,
+              resolveByDate: isHabit ? undefined : resolveByMs ?? undefined,
               fallbackKind,
-              ...(fallbackKind === "charity"
+              ...(currency === "SOL" && fallbackKind === "charity"
                 ? { charityAddress: charityAddress.trim(), charityName: charityName.trim() || undefined }
+                : {}),
+              ...(habitSchedule
+                ? { habit: { schedule: habitSchedule, requiredCheckins: habitCheck.required, doer: habit.doer } }
                 : {}),
             }),
       });
@@ -365,27 +389,23 @@ export function NewBetSheet({
             />
           </Field>
 
+          <CurrencyPicker options={currencyOptions} value={currency} onChange={setCurrency} />
+
           <Field
             label="Stake"
             htmlFor={ids.stake}
             error={show("stake")}
-            hint="Each side puts this in. It's held on Solana until the bet settles."
+            hint={currency === "PTS"
+              ? "Each side puts this in. Points are held until the bet settles."
+              : "Each side puts this in. It's held on Solana until the bet settles."}
           >
-            <div className="relative max-w-56">
-              <TextInput
-                id={ids.stake}
-                type="number"
-                inputMode="decimal"
-                min="0"
-                step="0.01"
-                value={stake}
-                onChange={(event) => setStake(event.target.value)}
-                placeholder="0.25"
-                className="pr-14 text-[22px] font-extrabold wdth-condensed tabular-nums"
-                aria-invalid={Boolean(show("stake"))}
-              />
-              <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-label font-semibold text-ink-soft">SOL</span>
-            </div>
+            <StakeInput
+              id={ids.stake}
+              currency={currency}
+              value={stake}
+              onChange={setStake}
+              invalid={Boolean(show("stake"))}
+            />
           </Field>
 
           {!isSports && (
@@ -395,7 +415,9 @@ export function NewBetSheet({
                 error={show("witnesses")}
                 hint={memberCount < 3
                   ? "Witnesses are other people in the group. Invite another friend so someone can decide."
-                  : `How many friends must agree on the winner. Up to ${limits.max} in this group.`}
+                  : isHabit
+                    ? `How many friends must approve each check-in. Up to ${limits.max} in this group.`
+                    : `How many friends must agree on the winner. Up to ${limits.max} in this group.`}
               >
                 <div className="flex items-center gap-2">
                   <button
@@ -422,7 +444,54 @@ export function NewBetSheet({
                 </div>
               </Field>
 
-              <Field label="Accept by" error={show("acceptBy")} htmlFor={ids.acceptBy}>
+              <div className="rounded-2xl border border-rule p-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-label font-semibold" id={ids.habitLabel}>Make it a habit</p>
+                    <p className="mt-0.5 text-meta text-ink-soft">
+                      Check in with proof on set days. Witnesses approve each check-in instead of voting once.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={habitOn}
+                    aria-labelledby={ids.habitLabel}
+                    onClick={() => setHabitOn((on) => !on)}
+                    className={cn(
+                      "relative mt-0.5 inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors",
+                      habitOn ? "border-ink bg-ink" : "border-rule bg-counter",
+                    )}
+                  >
+                    <span
+                      aria-hidden
+                      className={cn(
+                        "inline-block size-5 rounded-full bg-paper shadow-sm transition-transform",
+                        habitOn ? "translate-x-6" : "translate-x-1",
+                      )}
+                    />
+                  </button>
+                </div>
+                {habitOn && (
+                  <div className="mt-5 border-t border-rule pt-5">
+                    <HabitFields
+                      value={habit}
+                      onChange={setHabit}
+                      errors={habitCheck.errors}
+                      total={habitCheck.total}
+                      acceptorLabel={acceptorLabel}
+                      show={attempted}
+                    />
+                  </div>
+                )}
+              </div>
+
+              <Field
+                label="Accept by"
+                error={show("acceptBy")}
+                htmlFor={ids.acceptBy}
+                hint={isHabit ? "With no deadline, they have until the first check-in window closes." : undefined}
+              >
                 <Segmented
                   label="Accept by"
                   value={acceptByMode}
@@ -447,24 +516,33 @@ export function NewBetSheet({
                 )}
               </Field>
 
-              <Field
-                label="Decide by"
-                htmlFor={ids.resolveBy}
-                error={show("resolveBy")}
-                hint="Witnesses vote until this time."
-              >
-                <TextInput
-                  id={ids.resolveBy}
-                  type="datetime-local"
-                  value={resolveBy}
-                  min={toLocalInput(now)}
-                  onChange={(event) => setResolveBy(event.target.value)}
-                  className="max-w-72"
-                  aria-invalid={Boolean(show("resolveBy"))}
-                />
-              </Field>
+              {isHabit ? (
+                <div>
+                  <p className="text-label font-semibold">Verdict</p>
+                  <p className="mt-1 text-meta text-ink-soft">
+                    Decided automatically from the check-ins. Witnesses get 48 hours after the last day to finish reviewing.
+                  </p>
+                </div>
+              ) : (
+                <Field
+                  label="Decide by"
+                  htmlFor={ids.resolveBy}
+                  error={show("resolveBy")}
+                  hint="Witnesses vote until this time."
+                >
+                  <TextInput
+                    id={ids.resolveBy}
+                    type="datetime-local"
+                    value={resolveBy}
+                    min={toLocalInput(now)}
+                    onChange={(event) => setResolveBy(event.target.value)}
+                    className="max-w-72"
+                    aria-invalid={Boolean(show("resolveBy"))}
+                  />
+                </Field>
+              )}
 
-              <Field label="If there's no verdict by then">
+              <Field label={isHabit ? "If witnesses never review the check-ins" : "If there's no verdict by then"}>
                 <Segmented
                   label="If there's no verdict by then"
                   value={fallbackKind}
@@ -473,12 +551,12 @@ export function NewBetSheet({
                   options={[
                     { value: "return", label: "Everyone gets their stake back" },
                     { value: "burn", label: "Burn the pot" },
-                    { value: "charity", label: "Give it to charity" },
+                    ...(currency === "SOL" ? [{ value: "charity" as const, label: "Give it to charity" }] : []),
                   ]}
                 />
               </Field>
 
-              {fallbackKind === "charity" && (
+              {currency === "SOL" && fallbackKind === "charity" && (
                 <div className={cn("grid gap-4 sm:grid-cols-2")}>
                   <Field label="Charity name" htmlFor={ids.charityName} hint="Shown on the ticket.">
                     <TextInput

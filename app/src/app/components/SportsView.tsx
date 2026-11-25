@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { createBet, type Bet, type ScoreboardGame, type SportKind } from "../../lib/relayer";
 import { friendlyError } from "../../lib/bets";
+import { defaultStakeFor, normalizeStake, stakeError } from "../../lib/stake";
 import { useBaamData } from "../data";
-import { Button, Field, InlineError, ScreenTitle, Segmented, TextInput, useFieldId } from "./primitives";
+import { CurrencyPicker, StakeInput, useBetCurrency } from "./CurrencyFields";
+import { Button, Field, InlineError, ScreenTitle, Segmented, useFieldId } from "./primitives";
 import { Ticket } from "./ticket/Ticket";
 import { describeBet } from "./ticket/BetTicket";
 import { GameList, LEAGUE_LABELS, LeaguePicker, SidePicker, useScoreboard } from "./sports/GamePicker";
@@ -14,12 +16,16 @@ export function SportsView({
   onOpenBetChat: (groupId: string, betId: string) => void;
   onGoToChats: () => void;
 }) {
-  const { user, groups, loaded, refresh } = useBaamData();
+  const { user, groups, loaded, refresh, refreshPoints } = useBaamData();
+  const { options: currencyOptions, currency, setCurrency } = useBetCurrency();
   const [sport, setSport] = useState<SportKind>("nba");
   const board = useScoreboard(sport);
   const [game, setGame] = useState<ScoreboardGame | null>(null);
   const [backsHome, setBacksHome] = useState(true);
-  const [stake, setStake] = useState("0.1");
+  const [stake, setStake] = useState(() => defaultStakeFor(currency));
+  const [stakeTouched, setStakeTouched] = useState(false);
+  // A sensible starting stake for the chosen currency until the person types one.
+  useEffect(() => { if (!stakeTouched) setStake(defaultStakeFor(currency)); }, [currency, stakeTouched]);
   const [groupId, setGroupId] = useState("");
   const [posting, setPosting] = useState(false);
   const [postError, setPostError] = useState<string | null>(null);
@@ -32,7 +38,8 @@ export function SportsView({
   }, [groups, groupId]);
 
   const group = groups.find((g) => g.id === groupId) ?? null;
-  const stakeValid = Number(stake) > 0 && Number.isFinite(Number(stake));
+  const stakeProblem = stakeError(stake, currency);
+  const stakeValid = !stakeProblem;
   const canPost = Boolean(group && game && stakeValid && !posting);
   const backedTeam = game ? (backsHome ? game.homeTeam : game.awayTeam) : "";
 
@@ -43,8 +50,8 @@ export function SportsView({
       challenger: user.username,
       acceptor: "anyone",
       terms: game ? `${game.awayTeam} at ${game.homeTeam}` : "Pick a game",
-      stake: stake.trim() || "0",
-      currency: "SOL",
+      stake: normalizeStake(stake, currency) || "0",
+      currency,
       status: "PENDING",
       witnesses: 1,
       minBettors: 2,
@@ -56,7 +63,7 @@ export function SportsView({
       challengerBacksHome: backsHome,
     };
     return describeBet(bet, user.username);
-  }, [user.username, game, stake, group?.members, sport, backsHome]);
+  }, [user.username, game, stake, currency, group?.members, sport, backsHome]);
 
   async function post(): Promise<void> {
     if (!group || !game || !canPost) return;
@@ -68,8 +75,8 @@ export function SportsView({
         type: "DEV",
         acceptor: "anyone",
         terms: `${LEAGUE_LABELS[sport]}: ${game.awayTeam} @ ${game.homeTeam} — ${user.username} backs ${backedTeam}.`,
-        stake: stake.trim(),
-        currency: "SOL",
+        stake: normalizeStake(stake, currency),
+        currency,
         witnesses: Math.max(2, Math.ceil(group.members / 2)),
         minBettors: 2,
         sport,
@@ -79,6 +86,7 @@ export function SportsView({
         awayTeam: game.awayTeam,
       });
       void refresh();
+      void refreshPoints();
       onOpenBetChat(group.id, bet.id);
     } catch (err) {
       setPostError(friendlyError(err, "Couldn't post this bet. Try again."));
@@ -120,20 +128,21 @@ export function SportsView({
               <p className="text-label text-ink-soft">Pick a game to choose your side.</p>
             )}
 
-            <Field label="Stake" htmlFor={stakeId} hint="Each side puts this in." error={stake && !stakeValid ? "Enter an amount above 0." : undefined}>
-              <div className="relative max-w-56">
-                <TextInput
-                  id={stakeId}
-                  type="number"
-                  inputMode="decimal"
-                  min="0"
-                  step="0.01"
-                  value={stake}
-                  onChange={(event) => setStake(event.target.value)}
-                  className="pr-14 text-[22px] font-extrabold wdth-condensed tabular-nums"
-                />
-                <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-label font-semibold text-ink-soft">SOL</span>
-              </div>
+            <CurrencyPicker options={currencyOptions} value={currency} onChange={setCurrency} />
+
+            <Field
+              label="Stake"
+              htmlFor={stakeId}
+              hint={currency === "PTS" ? "Each side puts this in. Points are held until the game is final." : "Each side puts this in."}
+              error={stake && stakeProblem ? stakeProblem : undefined}
+            >
+              <StakeInput
+                id={stakeId}
+                currency={currency}
+                value={stake}
+                onChange={(next) => { setStakeTouched(true); setStake(next); }}
+                invalid={Boolean(stake && stakeProblem)}
+              />
             </Field>
 
             {loaded && groups.length === 0 ? (
