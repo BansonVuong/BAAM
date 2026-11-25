@@ -13,7 +13,9 @@
 //   MONGODB_DB    database name (default: "accountabilibuddy")
 //   MONGODB_TIMEOUT_MS connection/server selection timeout (default: 5 seconds)
 
-import { MongoClient, type Collection, type Db } from "mongodb";
+import { GridFSBucket, MongoClient, type Collection, type Db } from "mongodb";
+
+import type { BetSchedule, CheckinDoer, CheckinReview, CheckinStatus } from "./schedule";
 
 const MONGODB_URI = process.env.MONGODB_URI;
 const MONGODB_DB = process.env.MONGODB_DB ?? "accountabilibuddy";
@@ -136,6 +138,58 @@ export interface BetDoc {
   fallbackBlockedReason?: string;
   /** Unaccepted witness offer whose accept-by (or resolve-by) deadline passed. Nothing was escrowed. */
   offerExpired?: boolean;
+  // ── recurring check-in bets (relayer/checkins.ts) ─────────────────────────────
+  /** Present on recurring witness bets: outcome comes from reviewed check-ins, not votes. */
+  schedule?: BetSchedule;
+  /** Approved check-ins the doer needs to win (default: every occurrence). */
+  requiredCheckins?: number;
+  /** Which side is doing the habit (default challenger). */
+  doer?: CheckinDoer;
+  /** Unix ms when the check-in evaluator decided the outcome. */
+  resolvedAt?: number;
+  /** Why the check-in evaluator picked `resolvedWinner`. */
+  checkinVerdictReason?: string;
+}
+
+// ── proofs + check-ins (relayer/proofs.ts, relayer/checkins.ts) ─────────────────
+
+export interface ProofDoc {
+  id: string;
+  betId: string;
+  /** Username of the participant who attached it. */
+  uploader: string;
+  createdAt: number;
+  /** Set when the proof belongs to a check-in on a recurring bet. */
+  checkinId?: string;
+  caption?: string;
+  /** Normalized http(s) URL. */
+  link?: string;
+  /** Image stored in the GridFS `proofs` bucket; contentType comes from magic-byte sniffing. */
+  image?: {
+    fileId: string;
+    contentType: "image/jpeg" | "image/png" | "image/webp" | "image/heic";
+    bytes: number;
+    sha256: string;
+  };
+}
+
+export interface CheckinDoc {
+  id: string;
+  betId: string;
+  /** Occurrence date in the bet's timezone ("YYYY-MM-DD"); unique per bet. */
+  occurrenceKey: string;
+  occurrenceStart: number;
+  occurrenceEnd: number;
+  /** Username of the doer who checked in. */
+  doer: string;
+  submittedAt: number;
+  proofIds: string[];
+  caption?: string;
+  reviews: CheckinReview[];
+  status: CheckinStatus;
+  decidedAt?: number;
+  /** Optimistic-concurrency counter for review writes. */
+  rev: number;
 }
 
 export interface ProfileDoc {
@@ -285,6 +339,22 @@ export async function profiles(): Promise<Collection<ProfileDoc> | null> {
   const db = await getDb();
   return db ? db.collection<ProfileDoc>("profiles") : null;
 }
+export async function proofs(): Promise<Collection<ProofDoc> | null> {
+  const db = await getDb();
+  return db ? db.collection<ProofDoc>("proofs") : null;
+}
+export async function checkins(): Promise<Collection<CheckinDoc> | null> {
+  const db = await getDb();
+  return db ? db.collection<CheckinDoc>("checkins") : null;
+}
+let proofBucketCache: { db: Db; bucket: GridFSBucket } | null = null;
+/** GridFS bucket holding proof images (`proofs.files` / `proofs.chunks`). */
+export async function proofBucket(): Promise<GridFSBucket | null> {
+  const db = await getDb();
+  if (!db) return null;
+  if (proofBucketCache?.db !== db) proofBucketCache = { db, bucket: new GridFSBucket(db, { bucketName: "proofs" }) };
+  return proofBucketCache.bucket;
+}
 
 // ── indexes ─────────────────────────────────────────────────────────────────
 
@@ -313,4 +383,8 @@ async function ensureIndexes(db: Db): Promise<void> {
   await db.collection("discordConversations").createIndex({ memberUserIds: 1 });
   await db.collection("profiles").createIndex({ id: 1 }, { unique: true });
   await db.collection("profiles").createIndex({ github: 1 }, { unique: true });
+  await db.collection("proofs").createIndex({ id: 1 }, { unique: true });
+  await db.collection("proofs").createIndex({ betId: 1, createdAt: 1 });
+  await db.collection("checkins").createIndex({ id: 1 }, { unique: true });
+  await db.collection("checkins").createIndex({ betId: 1, occurrenceKey: 1 }, { unique: true });
 }

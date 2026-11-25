@@ -503,3 +503,232 @@ export function updateProfile(
     body: JSON.stringify(input),
   });
 }
+
+// ── proof, check-ins, stats ──────────────────────────────────────────────────
+// Relayer side: relayer/features.ts, relayer/proofs.ts, relayer/checkins.ts, relayer/stats.ts.
+
+/** Evidence attached to a witness bet (image, link and/or caption). */
+export interface ProofSummary {
+  id: string;
+  uploader: string;
+  createdAt: number;
+  /** Set when the proof belongs to a check-in on a recurring bet. */
+  checkinId: string | null;
+  caption: string | null;
+  link: string | null;
+  /** `url` is a signed, relative path usable directly as `<img src>` (see {@link proofImageUrl}). */
+  image: { url: string; contentType: string; bytes: number } | null;
+}
+
+/** Recurring-bet schedule. Days: 0 = Sunday … 6 = Saturday; times are wall clock in `timezone`. */
+export interface BetSchedule {
+  daysOfWeek: number[];
+  timezone: string;
+  startDate: string;
+  endDate: string;
+  windowStart?: string;
+  windowEnd?: string;
+}
+
+export type CheckinOccurrenceState =
+  | "upcoming" | "open" | "submitted" | "approved" | "rejected" | "missed"
+  | "approved-by-default" | "lapsed" | "unreviewed";
+
+export interface CheckinReview { reviewer: string; approve: boolean; at: number }
+
+export interface CheckinSummary {
+  id: string;
+  occurrenceKey: string;
+  occurrenceStart: number;
+  occurrenceEnd: number;
+  doer: string;
+  submittedAt: number;
+  caption: string | null;
+  proofIds: string[];
+  status: "pending" | "approved" | "rejected";
+  reviews: CheckinReview[];
+  approvals: number;
+  rejections: number;
+  decidedAt: number | null;
+}
+
+export interface CheckinWindow { key: string; start: number; end: number }
+
+export interface CheckinProgress {
+  schedule: BetSchedule;
+  doer: BetVoteChoice;
+  doerUsername: string | null;
+  required: number;
+  total: number;
+  approved: number;
+  /** Max approvals still reachable; the doer loses once this drops below `required`. */
+  possible: number;
+  submitted: number;
+  pendingReview: number;
+  verdictDeadline: number | null;
+  currentWindow: CheckinWindow | null;
+  nextWindow: CheckinWindow | null;
+  occurrences: Array<CheckinWindow & { state: CheckinOccurrenceState; checkinId: string | null }>;
+  decision:
+    | { winner: "doer" | "other"; reason: string }
+    | { winner: null; reason: "in-progress" | "witnesses-silent" };
+  verdictReason: string | null;
+}
+
+export interface BetViewerActions {
+  canAddProof: boolean;
+  canCheckin: boolean;
+  canReview: boolean;
+  canVote: boolean;
+}
+
+// Declaration merging: the relayer adds these fields to every Bet payload.
+export interface Bet {
+  proofCount?: number;
+  proofs?: ProofSummary[];
+  /** Present on recurring (check-in) bets; their outcome comes from check-ins, not votes. */
+  schedule?: BetSchedule;
+  requiredCheckins?: number;
+  doer?: BetVoteChoice;
+  resolvedAt?: number;
+  checkinVerdictReason?: string;
+  checkins?: CheckinSummary[];
+  checkinProgress?: CheckinProgress | null;
+  viewerActions?: BetViewerActions;
+}
+
+/** Absolute URL for a proof image (works in `<img src>`; the path carries a short-lived signature). */
+export function proofImageUrl(proof: ProofSummary): string | null {
+  return proof.image ? `${RELAYER_URL}${proof.image.url}` : null;
+}
+
+/** One bet with proofs + check-in progress (participants and chat members only). */
+export function getBet(betId: string): Promise<{ bet: Bet }> {
+  return req(`/bets/${encodeURIComponent(betId)}`);
+}
+
+export interface ProofInput {
+  /** Image file (JPEG/PNG/WebP/HEIC, ≤ 2 MB) or a data URL. */
+  image?: Blob | string;
+  /** http(s) link, e.g. a Strava activity. */
+  link?: string;
+  /** ≤ 280 characters. */
+  caption?: string;
+}
+
+/** POST a Blob as the raw body (other fields in the query string), or everything as JSON. */
+function postProofBody<T>(path: string, input: ProofInput, extra: Record<string, string | string[] | undefined>): Promise<T> {
+  if (input.image instanceof Blob) {
+    const params = new URLSearchParams();
+    const fields = { link: input.link, caption: input.caption, ...extra };
+    for (const [key, value] of Object.entries(fields)) {
+      if (value && value.length) params.set(key, Array.isArray(value) ? value.join(",") : value);
+    }
+    const query = params.toString();
+    return req(`${path}${query ? `?${query}` : ""}`, {
+      method: "POST",
+      headers: { "content-type": input.image.type || "application/octet-stream" },
+      body: input.image,
+    });
+  }
+  return req(path, { method: "POST", body: JSON.stringify({ ...input, ...extra }) });
+}
+
+/** Attach proof to a bet you're part of (optionally to one of your pending check-ins). */
+export function uploadProof(
+  betId: string,
+  input: ProofInput & { checkinId?: string },
+): Promise<{ proof: ProofSummary }> {
+  const { checkinId, ...rest } = input;
+  return postProofBody(`/bets/${encodeURIComponent(betId)}/proof`, rest, { checkinId });
+}
+
+/** Recurring-bet fields for POST /bets (resolveByDate is derived by the relayer). */
+export interface CheckinBetFields {
+  schedule: BetSchedule;
+  /** Default: every occurrence. */
+  requiredCheckins?: number;
+  /** Who does the habit (default "challenger"). */
+  doer?: BetVoteChoice;
+}
+
+/** Create a recurring check-in bet (createBet plus a schedule). */
+export function createCheckinBet(
+  input: Omit<Parameters<typeof createBet>[0], "resolveByDate"> & CheckinBetFields,
+): Promise<{ bet: Bet; message: ChatMessage }> {
+  return req("/bets", { method: "POST", body: JSON.stringify(input) });
+}
+
+/** Doer checks in for the open window (or `occurrenceKey`, which must be open now) with proof. */
+export function submitCheckin(
+  betId: string,
+  input: ProofInput & { occurrenceKey?: string; proofIds?: string[] },
+): Promise<{ checkin: CheckinSummary; bet: Bet }> {
+  const { occurrenceKey, proofIds, ...rest } = input;
+  return postProofBody(`/bets/${encodeURIComponent(betId)}/checkins`, rest, { occurrenceKey, proofIds });
+}
+
+/** Witness approves/rejects a check-in; the review may decide the bet. */
+export function reviewCheckin(
+  betId: string,
+  checkinId: string,
+  approve: boolean,
+): Promise<{ checkin: CheckinSummary; bet: Bet; betDecided: boolean; resolvedWinner?: BetVoteChoice }> {
+  return req(`/bets/${encodeURIComponent(betId)}/checkins/${encodeURIComponent(checkinId)}/review`, {
+    method: "POST",
+    body: JSON.stringify({ approve }),
+  });
+}
+
+export function getCheckins(betId: string): Promise<{ checkins: CheckinSummary[]; progress: CheckinProgress | null }> {
+  return req(`/bets/${encodeURIComponent(betId)}/checkins`);
+}
+
+export type BetResult = "win" | "loss" | "refund" | "forfeit";
+
+export interface CurrencyTotals {
+  wins: number;
+  losses: number;
+  refunds: number;
+  forfeits: number;
+  staked: number;
+  net: number;
+}
+
+export interface HeadToHead {
+  opponent: string;
+  played: number;
+  wins: number;
+  losses: number;
+  refunds: number;
+  forfeits: number;
+  active: number;
+  lastResult: { result: BetResult; betId: string; at: number; currency: "SOL" | "PTS" } | null;
+}
+
+export interface UserStats {
+  username: string;
+  wins: number;
+  losses: number;
+  refunds: number;
+  forfeits: number;
+  active: number;
+  pending: number;
+  winRate: number | null;
+  currentWinStreak: number;
+  longestWinStreak: number;
+  /** +n = won the last n, −n = lost the last n. */
+  form: number;
+  currentCheckinStreak: number;
+  longestCheckinStreak: number;
+  checkins: { approved: number; missed: number; total: number };
+  byCurrency: Record<"SOL" | "PTS", CurrencyTotals>;
+  /** Sorted by most played. */
+  headToHead: HeadToHead[];
+  recent: Array<{ betId: string; result: BetResult; opponent: string | null; at: number; currency: "SOL" | "PTS"; terms: string }>;
+}
+
+/** Record, streaks and rivalries, computed only from bets the viewer can already see. */
+export function getUserStats(username: string): Promise<{ stats: UserStats; scope: "self" | "shared" }> {
+  return req(`/stats/${encodeURIComponent(username)}`);
+}
