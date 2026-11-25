@@ -184,21 +184,6 @@ export function getGameResult(
   return req(`/game?sport=${sport}&id=${encodeURIComponent(id)}`);
 }
 
-/** Resolve an accountability commitment as successful (oracle signs on-chain). */
-export function verifyCommitment(
-  commitmentId: string,
-): Promise<{ commitmentId: string; signature: string; explorer: string }> {
-  return req("/verify", {
-    method: "POST",
-    body: JSON.stringify({ commitmentId }),
-  });
-}
-
-/** Trigger the sports-bet settlement crank on the relayer. */
-export function settleBets(): Promise<{ ok: boolean }> {
-  return req("/settle-bet", { method: "POST" });
-}
-
 /**
  * An on-chain 1v1 / group-chat sports wager. No witness is needed — the result
  * is verifiable from the sports feed and settled by the oracle crank.
