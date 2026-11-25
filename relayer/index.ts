@@ -20,6 +20,18 @@
 //   DISCORD_BOT_TOKEN        Discord bot token (needed when DISCORD_ENABLED=true)
 //   DISCORD_APPLICATION_ID   Discord app/client ID (for slash command registration)
 //   WEB_BASE_URL             Public URL of the web app (for Discord embed links)
+//   BET_CURRENCIES    comma list of currencies POST /bets accepts: PTS (play-money
+//                     points, off-chain) and/or SOL (devnet escrow). Default "PTS,SOL";
+//                     set "PTS" to disable SOL bets. The FIRST entry is the default
+//                     when a client omits `currency` (current web/iOS clients send
+//                     "SOL" explicitly). Points never convert to or from SOL.
+//   POINTS_SIGNUP_GRANT one-time points grant per user (default 1000)
+//   POINTS_TOPUP_FLOOR  once per UTC day a balance below this can be refilled up to it
+//                       (default 100; 0 disables top-ups)
+//   POINTS_SPORTS_RESULT_TIMEOUT_HOURS refund a held points sports bet if the feed has
+//                       no final result this long after settle time (default 168)
+//   POINTS_STALE_MS     age after which the crank recovers a crashed points op or
+//                       accept attempt (default 120000)
 
 import "dotenv/config";
 import crypto from "crypto";
@@ -36,6 +48,7 @@ import {
 } from "./db";
 import { startDiscordBot, verifyDiscordLinkCode, announceDiscordLink } from "./discord";
 import { fallbackLabel, isWitnessOfferExpired, witnessCrankAction } from "./witness-fallback";
+import * as points from "./points";
 import idl from "./generated/accountability.json";
 import type { Accountability } from "./generated/accountability";
 
@@ -909,6 +922,9 @@ const server = http.createServer(async (req, res) => {
         createdAt: now,
       };
       await col.insertOne(user);
+      await points.ensurePointsAccount(user).catch((err) =>
+        console.warn("points grant failed on signup (retried lazily):", err instanceof Error ? err.message : err),
+      );
       await ensureUserWallet(user).catch((err) =>
         console.warn("wallet provisioning failed on signup:", err instanceof Error ? err.message : err),
       );
@@ -940,7 +956,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && req.url === "/auth/me") {
       const user = await getAuthenticatedUser(req);
       if (!user) return json(res, 401, { error: "unauthorized" });
-      return json(res, 200, { user: toPublicUser(user) });
+      const pointsBalance = await points.getPointsBalance(user).catch(() => null);
+      return json(res, 200, { user: toPublicUser(user), pointsBalance });
     }
 
     // GET /profile
@@ -966,7 +983,33 @@ const server = http.createServer(async (req, res) => {
         github: authUser?.username ?? PROFILE_GITHUB,
         wallet: wallet.toBase58(),
         solBalance,
+        pointsBalance: authUser ? await points.getPointsBalance(authUser).catch(() => null) : null,
+        betCurrencies: { allowed: points.BET_CURRENCIES, default: points.DEFAULT_BET_CURRENCY },
       });
+    }
+
+    // ── points (play money; see relayer/points.ts) ──
+    // GET /points → { currency, balance, held, topup, signupGrant, ledger[], betCurrencies }
+    if (req.method === "GET" && req.url && /^\/points(?:\?|$)/.test(req.url)) {
+      const authUser = await getAuthenticatedUser(req);
+      if (!authUser) return json(res, 401, { error: "unauthorized" });
+      const limit = Number(new URL(req.url, "http://x").searchParams.get("limit") ?? 25);
+      const summary = await points.getPointsSummary(authUser, Number.isFinite(limit) ? limit : 25);
+      return json(res, 200, { points: summary });
+    }
+    // POST /points/topup → { claimed, points } | 409 { error, points }
+    if (req.method === "POST" && req.url === "/points/topup") {
+      const authUser = await getAuthenticatedUser(req);
+      if (!authUser) return json(res, 401, { error: "unauthorized" });
+      const out = await points.claimPointsTopup(authUser);
+      return json(res, out.status, out.body);
+    }
+    // POST /points/crank — operator-only: run the points settlement sweep now.
+    if (req.method === "POST" && req.url === "/points/crank") {
+      if (!OPERATOR_TOKEN) return json(res, 404, { error: "not found" });
+      if (!isOperatorRequest(req)) return json(res, 401, { error: "unauthorized" });
+      const report = await runPointsCrank();
+      return json(res, 200, { ok: true, report });
     }
 
     // POST /verify  (original accountability commitment)
@@ -1569,8 +1612,12 @@ const server = http.createServer(async (req, res) => {
       const acceptorInput = typeof body.acceptor === "string" ? body.acceptor.trim() : "";
       let terms = typeof body.terms === "string" ? body.terms.trim() : "";
       const stakeInput = typeof body.stake === "string" ? body.stake.trim() : `${body.stake ?? ""}`.trim();
-      // All bets are on-chain SOL now.
-      const currency = "SOL";
+      // PTS = play-money points (off-chain, relayer/points.ts); SOL = on-chain escrow.
+      // BET_CURRENCIES decides what's allowed and the default when omitted.
+      const currencyChoice = points.resolveBetCurrency(body.currency, points.BET_CURRENCIES);
+      if ("error" in currencyChoice) return json(res, 400, { error: currencyChoice.error });
+      const currency = currencyChoice.currency;
+      const isPoints = currency === "PTS";
 
       // DEV "sports" bets are settled by sports feed data rather than witness votes.
       // They carry a sport + numeric event id + which side the challenger backs.
@@ -1642,7 +1689,11 @@ const server = http.createServer(async (req, res) => {
       if (!stakeInput || !Number.isFinite(numericStake) || numericStake <= 0) {
         return json(res, 400, { error: "stake must be a positive number" });
       }
-      const amountLamports = solStakeToLamports(stakeInput);
+      if (isPoints) {
+        const pre = await points.precheckPointsBet(authUser, { stake: stakeInput, fallbackKind: body.fallbackKind });
+        if ("error" in pre) return json(res, pre.status, { error: pre.error });
+      }
+      const amountLamports = isPoints ? 0 : solStakeToLamports(stakeInput);
       if (isSports) {
         if (!isSupportedSport(sport)) {
           return json(res, 400, { error: "sport must be soccer | nba | nfl | nhl" });
@@ -1706,8 +1757,9 @@ const server = http.createServer(async (req, res) => {
       if (!isIMessage && !isDiscord && group && !isGroupMember(group, authUser.username)) {
         return json(res, 403, { error: "group membership required" });
       }
-      let challengerKp: web3.Keypair;
-      try {
+      // Points bets never touch a wallet; the stake was checked by precheckPointsBet.
+      let challengerKp: web3.Keypair | undefined;
+      if (!isPoints) try {
         challengerKp = await ensureUserWallet(authUser);
         await requireSolBalanceForBet(challengerKp.publicKey, amountLamports, "challenger");
       } catch (err) {
@@ -1752,7 +1804,8 @@ const server = http.createServer(async (req, res) => {
         }
         const fallbackKind: BetDoc["fallbackKind"] =
           body.fallbackKind === "burn" || body.fallbackKind === "charity" ? body.fallbackKind : "return";
-        let fallbackDest = BURN_ADDRESS.toBase58();
+        // Points bets have no on-chain destination (charity is rejected by precheckPointsBet).
+        let fallbackDest: string | undefined = isPoints ? undefined : BURN_ADDRESS.toBase58();
         let charityName: string | undefined;
         if (fallbackKind === "charity") {
           const addr = typeof body.charityAddress === "string" ? body.charityAddress.trim() : "";
@@ -1808,6 +1861,7 @@ const server = http.createServer(async (req, res) => {
           challengerBacksHome,
         } : {}),
         ...witnessFields,
+        ...(isPoints ? { onChain: false } : {}),
       };
       await betsCol.insertOne(betDoc);
 
@@ -1815,7 +1869,25 @@ const server = http.createServer(async (req, res) => {
       // before kickoff (an acceptor after the result is known would be unfair). Witness
       // bets escrow nothing yet — they stay PENDING and wait indefinitely for a taker;
       // both stakes are escrowed atomically when someone accepts (see POST /bets/accept).
-      if (isSports) {
+      // Points sports bets hold the challenger's points the same way, off-chain.
+      if (isSports && isPoints) {
+        const kickoff = sportsKickoffSec ?? 0;
+        if (!kickoff) {
+          await betsCol.deleteOne({ id: betDoc.id });
+          return json(res, 500, { error: "sports bet kickoff was not resolved" });
+        }
+        const held = await points
+          .holdPointsForSportsCreate(betDoc, authUser, kickoff, kickoff + Math.max(1, SPORTS_BET_SETTLE_AFTER_SECS))
+          .catch(async (err) => {
+            await betsCol.deleteOne({ id: betDoc.id, pointsState: { $exists: false } });
+            throw err;
+          });
+        if ("error" in held) {
+          await betsCol.deleteOne({ id: betDoc.id, pointsState: { $exists: false } });
+          return json(res, held.status, { error: held.error });
+        }
+        Object.assign(betDoc, held.fields);
+      } else if (isSports && challengerKp) {
         try {
           if (!sportsKickoffSec) {
             return json(res, 500, { error: "sports bet kickoff was not resolved" });
@@ -1950,6 +2022,13 @@ const server = http.createServer(async (req, res) => {
 
       const usersCol = await users();
       if (!usersCol) return dbUnconfigured(res);
+
+      // Points bets hold stakes off-chain (relayer/points.ts); no wallet, no RPC.
+      if (bet.currency === "PTS") {
+        const out = await points.acceptPointsBet(bet, authUser, update);
+        if (out.status === 200 && out.body.bet) out.body.bet = normalizeBetDoc(out.body.bet as BetDoc);
+        return json(res, out.status, out.body);
+      }
 
       try {
         const amountLamports = solStakeToLamports(bet.stake);
@@ -2341,8 +2420,16 @@ const server = http.createServer(async (req, res) => {
           memberUsernames: [...memberUsernames],
         };
       }).sort((a, b) => a.name.localeCompare(b.name));
+      // Points and SOL are ranked separately (?currency=PTS|SOL). Default: SOL while SOL
+      // bets are enabled (existing clients), otherwise PTS.
+      const currencyParam = new URL(req.url, "http://x").searchParams.get("currency")?.trim().toUpperCase() || "";
+      const lbCurrency = currencyParam || (points.SOL_BETS_ENABLED ? "SOL" : "PTS");
+      if (!points.isBetCurrency(lbCurrency)) return json(res, 400, { error: "currency must be PTS or SOL" });
+      const currencyBets = leaderboardBets.filter((bet) => points.betCurrencyOf(bet) === lbCurrency);
+      const lbPlayers = buildLeaderboardPlayers(userDocs, profileDocs, legacyPlayers, currencyBets);
       return json(res, 200, {
-        players: buildLeaderboardPlayers(userDocs, profileDocs, legacyPlayers, leaderboardBets),
+        currency: lbCurrency,
+        players: lbCurrency === "PTS" ? await points.rankPlayersByPoints(lbPlayers, userDocs) : lbPlayers,
         discordServers,
         ...(guildId ? { bets: selectedDiscordBets.map(normalizeBetDoc) } : {}),
       });
@@ -2451,7 +2538,18 @@ if (DISCORD_ENABLED) {
   console.log("Discord integration disabled (set DISCORD_ENABLED=true to enable)");
 }
 
+// Points settlement never touches the chain, so it runs first and on its own (an
+// RPC outage must not stall play-money payouts). Sports results come from the same
+// feed helper crankSportsBets uses.
+function runPointsCrank(): Promise<points.PointsCrankReport> {
+  return points.crankPointsBets({
+    fetchSportsResult: (bet) =>
+      isSupportedSport(bet.sport) && bet.espnGameId ? fetchGameResult(bet.sport, bet.espnGameId) : Promise.resolve(null),
+  });
+}
+
 async function runPoll(): Promise<void> {
+  await runPointsCrank().catch((err) => console.error("points crank error:", err));
   try {
     await crankTimeouts();
     await crankSportsBets();
@@ -2798,6 +2896,7 @@ function toIMessageBetCard(viewerUsername: string, bet: BetDoc, group: GroupDoc)
     && status === "active"
     && !winner
     && !(normalized.onChain && normalized.currency === "SOL" && normalized.onChainState !== "locked");
+  const isPointsBet = normalized.currency === "PTS";
 
   return {
     betId: normalized.id,
@@ -2827,7 +2926,12 @@ function toIMessageBetCard(viewerUsername: string, bet: BetDoc, group: GroupDoc)
     winnerName,
     outcomeLabel: normalized.offerExpired
       ? "Offer expired — never accepted"
-      : fallbackLabel(normalized),
+      : fallbackLabel(points.asFallbackLabelDoc(normalized)),
+    points: isPointsBet ? {
+      state: normalized.pointsState ?? null,
+      label: points.pointsStateLabel(normalized),
+      settlement: normalized.pointsSettlement ?? null,
+    } : null,
     validation: isSports ? "sports" : "witness",
     sports: isSports ? {
       sport: normalized.sport ?? null,
@@ -2839,7 +2943,9 @@ function toIMessageBetCard(viewerUsername: string, bet: BetDoc, group: GroupDoc)
     onChain: {
       enabled: Boolean(normalized.onChain),
       state: normalized.onChainState ?? null,
-      label: getOnChainStateLabel(normalized.onChainState, normalized),
+      label: isPointsBet
+        ? fallbackLabel(points.asFallbackLabelDoc(normalized))?.toUpperCase() ?? points.pointsStateLabel(normalized)
+        : getOnChainStateLabel(normalized.onChainState, normalized),
       signatures: {
         create: normalized.createSig ?? null,
         accept: normalized.acceptSig ?? null,

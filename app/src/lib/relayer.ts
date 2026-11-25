@@ -503,3 +503,118 @@ export function updateProfile(
     body: JSON.stringify(input),
   });
 }
+
+// ── points ──────────────────────────────────────────────────────────────────────
+// Play-money points (no cash value: can't be bought, transferred, withdrawn, or
+// converted to/from SOL). PTS bets never touch the chain; see relayer/points.ts.
+
+export type BetCurrency = "PTS" | "SOL";
+
+export type PointsLedgerKind = "grant" | "topup" | "hold" | "payout" | "refund" | "burn";
+
+export interface PointsLedgerEntry {
+  key: string;
+  kind: PointsLedgerKind;
+  /** Signed change to the balance (hold < 0; burn = 0 because the stake left at hold). */
+  delta: number;
+  /** Points involved (stake, pot, grant size). */
+  amount: number;
+  reason: string;
+  betId: string | null;
+  createdAt: number;
+}
+
+export interface PointsSummary {
+  currency: "PTS";
+  balance: number;
+  /** Points currently held in the user's open/active bets (not spendable). */
+  held: number;
+  topup: {
+    floor: number;
+    claimable: boolean;
+    /** Points a claim right now would add (0 when not claimable). */
+    amount: number;
+    claimedToday: boolean;
+    /** Unix ms of the next UTC midnight. */
+    resetsAt: number;
+  };
+  signupGrant: number;
+  ledger: PointsLedgerEntry[];
+  /** What POST /bets accepts; `default` applies when `currency` is omitted. */
+  betCurrencies: { allowed: BetCurrency[]; default: BetCurrency };
+}
+
+/** Points-escrow fields present on PTS bets (alongside the base {@link Bet}). */
+export interface PointsBetFields {
+  pointsState?: "open" | "held" | "settled" | "refunded" | "burned";
+  pointsSettlement?:
+    | { type: "winner"; winner: BetVoteChoice }
+    | { type: "refund"; reason: string }
+    | { type: "burn"; reason: string };
+  pointsSettledAt?: number;
+}
+
+export type PointsBet = Bet & PointsBetFields;
+
+export function isPointsBet(bet: Pick<Bet, "currency">): boolean {
+  return bet.currency === "PTS";
+}
+
+/** Balance, held stakes, top-up status and recent ledger entries for the signed-in user. */
+export function getPoints(limit?: number): Promise<{ points: PointsSummary }> {
+  return req(`/points${limit ? `?limit=${encodeURIComponent(String(limit))}` : ""}`);
+}
+
+/** Claim the daily top-up (refills a balance below the floor up to it, once per UTC day). */
+export function claimPointsTopup(): Promise<{ claimed: number; points: PointsSummary }> {
+  return req("/points/topup", { method: "POST", body: "{}" });
+}
+
+/**
+ * Create a bet in either currency. PTS stakes are whole numbers ≥ 1 and PTS bets
+ * can't use a charity fallback (return or burn only).
+ */
+export function createBetInCurrency(
+  input: Omit<Parameters<typeof createBet>[0], "currency"> & {
+    currency: BetCurrency;
+    fallbackKind?: "return" | "burn" | "charity";
+    charityAddress?: string;
+    charityName?: string;
+  },
+): Promise<{ bet: PointsBet; message: ChatMessage }> {
+  return req("/bets", { method: "POST", body: JSON.stringify(input) });
+}
+
+/** Leaderboard ranked in one currency; PTS players carry a `points` balance. */
+export function getLeaderboardByCurrency(
+  currency: BetCurrency,
+  discordGuildId?: string,
+): Promise<{
+  currency: BetCurrency;
+  players: Array<Player & { points?: number }>;
+  discordServers: DiscordLeaderboardServer[];
+  bets?: Bet[];
+}> {
+  const params = new URLSearchParams({ currency });
+  if (discordGuildId) params.set("discordGuildId", discordGuildId);
+  return req(`/leaderboard?${params.toString()}`);
+}
+
+/** "100 PTS" / "0.5 SOL". */
+export function formatStake(bet: Pick<Bet, "stake" | "currency">): string {
+  return `${bet.stake} ${bet.currency || "SOL"}`;
+}
+
+/** Escrow status text for a points bet (the on-chain labels don't apply). */
+export function pointsBetLabel(bet: PointsBet): string | null {
+  if (!isPointsBet(bet)) return null;
+  if (bet.offerExpired) return "Offer expired — never accepted";
+  switch (bet.pointsState) {
+    case "open": return "Points held · awaiting a taker";
+    case "held": return bet.pointsSettlement || bet.fallbackApplied ? "Settling points…" : "Points locked";
+    case "settled": return "Points paid out";
+    case "refunded": return bet.fallbackApplied ? "Refunded — no verdict by deadline" : "Points refunded";
+    case "burned": return "Burned — no verdict by deadline";
+    default: return null;
+  }
+}

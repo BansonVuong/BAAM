@@ -136,6 +136,26 @@ export interface BetDoc {
   fallbackBlockedReason?: string;
   /** Unaccepted witness offer whose accept-by (or resolve-by) deadline passed. Nothing was escrowed. */
   offerExpired?: boolean;
+  // ── points escrow (currency === "PTS"; never on-chain, see relayer/points.ts) ──
+  /**
+   * Off-chain points escrow lifecycle. "open" = only the challenger's stake is held
+   * (sports offer awaiting a taker); "held" = both stakes held; the rest are terminal.
+   */
+  pointsState?: "open" | "held" | "settled" | "refunded" | "burned";
+  /** Settlement decision recorded (once, conditionally) before any payout is applied. */
+  pointsSettlement?:
+    | { type: "winner"; winner: "challenger" | "acceptor" }
+    | { type: "refund"; reason: string }
+    | { type: "burn"; reason: string };
+  /** User ids whose stakes are held (stable even if usernames change). */
+  pointsChallengerId?: string;
+  pointsAcceptorId?: string;
+  /** Accept attempt id used in the acceptor's (and witness challenger's) hold keys. */
+  pointsHoldAttempt?: string;
+  /** In-flight accept claim (stops two acceptors racing); cleared on success/failure. */
+  pointsAcceptClaim?: { attempt: string; userId: string; username: string; at: number };
+  /** Unix ms when points were paid out / refunded / burned. */
+  pointsSettledAt?: number;
 }
 
 export interface ProfileDoc {
