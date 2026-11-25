@@ -167,6 +167,8 @@ function countVotes(bet: Bet): { challenger: number; acceptor: number; total: nu
 
 function getResolvedWinner(bet: Bet): BetVoteChoice | undefined {
   if (bet.status === "PENDING") return undefined;
+  // No-verdict outcomes (fallback/expiry) are final; late votes never make a winner.
+  if (bet.fallbackApplied || bet.fallbackBlocked || bet.offerExpired) return undefined;
   if (bet.resolvedWinner) return bet.resolvedWinner;
   const votes = countVotes(bet);
   const threshold = Math.max(1, Number(bet.witnesses) || 1);

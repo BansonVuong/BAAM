@@ -33,6 +33,7 @@ import {
   isDbConfigured, groups, messages, bets, players, profiles, users, imessageConversations, discordConversations, type GroupDoc, type MessageDoc, type ProfileDoc, type PlayerDoc, type UserDoc, type BetDoc, type IMessageConversationDoc, type DiscordConversationDoc,
 } from "./db";
 import { startDiscordBot, verifyDiscordLinkCode, announceDiscordLink } from "./discord";
+import { fallbackLabel, isWitnessOfferExpired, witnessCrankAction } from "./witness-fallback";
 import idl from "./generated/accountability.json";
 import type { Accountability } from "./generated/accountability";
 
@@ -83,6 +84,11 @@ const SOCIAL_VAULT_SEED = Buffer.from("social_vault");
 // Standard Solana incinerator — burned lamports are unrecoverable.
 const BURN_ADDRESS = new web3.PublicKey("1nc1nerator11111111111111111111111111111111");
 const FALLBACK_KIND_CODE: Record<string, number> = { return: 0, burn: 1, charity: 2 };
+// New witness bets escrow into SocialBet (escrow_bet/settle_social, fallback enforced
+// on-chain). Set SOCIAL_ESCROW_ENABLED=false to fall back to the legacy SportsBet path.
+const SOCIAL_ESCROW_ENABLED = process.env.SOCIAL_ESCROW_ENABLED !== "false";
+// Accepting must leave room before the on-chain end_date (escrow_bet requires end_date > now).
+const SOCIAL_ESCROW_MIN_WINDOW_SECS = 60;
 
 const WALLET_ENC_KEY = deriveWalletKey();
 
@@ -453,6 +459,8 @@ type BetPresentationStatus = "pending" | "active" | "completed";
 function getBetResolvedWinner(doc: BetDoc): BetVoteChoice | undefined {
   const normalized = normalizeBetDoc(doc);
   if (normalized.status === "PENDING") return undefined;
+  // A committed/blocked fallback is final: late (racing) votes never produce a winner.
+  if (normalized.fallbackApplied || normalized.fallbackBlocked) return undefined;
   if (normalized.resolvedWinner) return normalized.resolvedWinner;
   const votes = countBetVotes(normalized.votesByVoter ?? {});
   const threshold = Math.max(1, Number(normalized.witnesses) || 1);
@@ -462,13 +470,17 @@ function getBetResolvedWinner(doc: BetDoc): BetVoteChoice | undefined {
 }
 
 function getBetPresentationStatus(doc: BetDoc): BetPresentationStatus {
+  // A fallback/expiry is final even if a racing vote rewrote `status`.
+  if (doc.fallbackApplied || doc.fallbackBlocked || doc.offerExpired) return "completed";
   const normalized = normalizeBetStatus(doc.status);
   if (normalized === "PENDING") return "pending";
   if (normalized === "ACTIVE") return "active";
   return "completed";
 }
 
-function getOnChainStateLabel(state?: BetDoc["onChainState"]): string {
+function getOnChainStateLabel(state?: BetDoc["onChainState"], doc?: BetDoc): string {
+  const fallback = doc ? fallbackLabel(doc) : null;
+  if (fallback) return fallback.toUpperCase();
   switch (state) {
     case "open": return "ESCROW OPEN · awaiting match";
     case "locked": return "LOCKED IN ESCROW · on-chain";
@@ -621,8 +633,44 @@ async function crankSportsBets(): Promise<void> {
 
 // ── chat-bet crank (witness-vote settled) ──────────────────────────────────────
 // Settles on-chain SOL chat bets from their off-chain resolution: pays the winner
-// once both sides have staked (Locked) and a witness quorum picked a side, and
-// refunds the creator if the accept window lapses with no opponent.
+// once both sides have staked (Locked) and a witness quorum picked a side, applies
+// the precommitted fallback when the resolve-by date passes with no quorum, and
+// refunds the creator if a legacy accept window lapses with no opponent.
+//
+// Race safety: the fallback is claimed in Mongo with a conditional updateOne
+// (status ACTIVE, no resolvedWinner, no prior claim) BEFORE any on-chain call, and
+// witnessCrankAction() lets a claimed fallback outrank any resolvedWinner written
+// afterwards by a racing vote. On-chain, settleBet/settleSocial close the escrow,
+// so at most one payout can ever land.
+
+type BetsCollection = NonNullable<Awaited<ReturnType<typeof bets>>>;
+
+/** Atomically commit a locked, unresolved witness bet to its fallback (or to blocking it). */
+async function claimWitnessFallback(
+  betsCol: BetsCollection,
+  betId: string,
+  set: Partial<BetDoc>,
+): Promise<boolean> {
+  const result = await betsCol.updateOne(
+    {
+      id: betId,
+      status: "ACTIVE",
+      onChainState: "locked",
+      resolvedWinner: { $exists: false },
+      fallbackApplied: { $exists: false },
+      fallbackBlocked: { $exists: false },
+    },
+    { $set: { status: "COMPLETED", fallbackAppliedAt: Date.now(), ...set } },
+  );
+  return result.modifiedCount === 1;
+}
+
+async function markWitnessBetSettled(betsCol: BetsCollection, betId: string, sig: string | undefined): Promise<void> {
+  await betsCol.updateOne(
+    { id: betId },
+    { $set: { onChainState: "settled", status: "COMPLETED", ...(sig ? { settleSig: sig } : {}) } },
+  );
+}
 
 async function crankWitnessBets(): Promise<void> {
   const betsCol = await bets();
@@ -632,6 +680,20 @@ async function crankWitnessBets(): Promise<void> {
   const slot = await connection.getSlot("confirmed");
   const now = await connection.getBlockTime(slot);
   if (now === null) return;
+  const nowMs = now * 1000;
+
+  // Unaccepted witness offers past their accept-by (or resolve-by) date: nothing was
+  // escrowed, so just close them out. POST /bets/accept also rejects them.
+  const expired = await betsCol.updateMany(
+    {
+      status: "PENDING",
+      validation: { $ne: "sports" },
+      onChain: { $ne: true },
+      $or: [{ acceptByDate: { $lte: nowMs } }, { resolveByDate: { $lte: nowMs } }],
+    },
+    { $set: { status: "COMPLETED", offerExpired: true } },
+  );
+  if (expired.modifiedCount) console.log(`expired ${expired.modifiedCount} unaccepted witness offer(s)`);
 
   const docs = await betsCol
     .find({ onChain: true, onChainState: { $in: ["open", "locked"] } }, { projection: { _id: 0 } })
@@ -640,61 +702,147 @@ async function crankWitnessBets(): Promise<void> {
   for (const doc of docs) {
     const bet = normalizeBetDoc(doc);
     if (!bet.betPda) continue;
-    const betPubkey = new web3.PublicKey(bet.betPda);
-
-    let acct: Awaited<ReturnType<typeof program.account.sportsBet.fetch>>;
     try {
-      acct = await program.account.sportsBet.fetch(betPubkey);
-    } catch {
-      continue; // already closed (settled/cancelled) on-chain
+      if ((bet.onChainKind ?? "sports") === "social") {
+        await crankSocialWitnessBet(betsCol, bet, nowMs);
+      } else {
+        await crankLegacyWitnessBet(betsCol, usersCol, bet, now);
+      }
+    } catch (err) {
+      console.error(`witness crank failed for bet ${bet.id}:`, err);
     }
-    const vault = sportsVaultPda(betPubkey);
+  }
+}
 
-    if ("locked" in acct.state) {
-      // Sports bets are settled from sports feeds by crankSportsBets, not votes.
-      if (bet.validation === "sports") continue;
-      if (!bet.resolvedWinner || !acct.opponent) continue;
-      if (acct.settleAfter.toNumber() > now) continue;
-      // creator backs "home"/challenger, so home_won === challenger won.
-      const homeWon = bet.resolvedWinner === "challenger";
-      try {
-        const sig = await program.methods
-          .settleBet(homeWon)
-          .accountsStrict({
-            oracle: oracle.publicKey,
-            creator: acct.creator,
-            opponent: acct.opponent,
-            sportsBet: betPubkey,
-            vault,
-          })
-          .rpc();
-        await betsCol.updateOne(
-          { id: bet.id },
-          { $set: { settleSig: sig, onChainState: "settled", status: "COMPLETED" } },
-        );
-        console.log(`settled chat bet ${bet.id} (winner=${bet.resolvedWinner}): ${sig}`);
-      } catch (err) {
-        console.error(`settle failed for chat bet ${bet.id}:`, err);
-      }
-    } else if ("open" in acct.state) {
-      // Accept window elapsed with no opponent — refund the creator and close out.
-      if (acct.startTime.toNumber() > now) continue;
-      const challengerUser = await usersCol.findOne({ usernameLower: bet.challenger.toLowerCase() });
-      if (!challengerUser?.walletSecret) continue;
-      try {
-        const sig = await programAs(loadUserKeypair(challengerUser))
-          .methods.cancelBet()
-          .accountsStrict({ creator: acct.creator, sportsBet: betPubkey, vault })
-          .rpc();
-        await betsCol.updateOne(
-          { id: bet.id },
-          { $set: { onChainState: "cancelled", status: "COMPLETED", createSig: bet.createSig ?? sig } },
-        );
-        console.log(`refunded expired chat bet ${bet.id}: ${sig}`);
-      } catch (err) {
-        console.error(`refund failed for chat bet ${bet.id}:`, err);
-      }
+/** Witness bet escrowed in a SocialBet (escrow_bet). Fallback is enforced on-chain. */
+async function crankSocialWitnessBet(betsCol: BetsCollection, bet: BetDoc, nowMs: number): Promise<void> {
+  const socialBet = new web3.PublicKey(bet.betPda!);
+  const acct = await program.account.socialBet.fetchNullable(socialBet);
+  if (!acct) {
+    // Escrow already closed. If we had committed to the fallback, its settle tx
+    // landed but wasn't recorded (e.g. confirmation timeout) — finalize the doc.
+    if (bet.fallbackApplied && bet.onChainState === "locked") {
+      await markWitnessBetSettled(betsCol, bet.id, undefined);
+      console.warn(`social bet ${bet.id}: escrow already closed; marked fallback settled without a signature`);
     }
+    return;
+  }
+  if (!("locked" in acct.state)) return;
+
+  const action = witnessCrankAction(bet, nowMs);
+  let outcome: 0 | 1 | 2;
+  if (action.type === "settle-winner") {
+    outcome = action.winner === "challenger" ? 0 : 1;
+  } else if (action.type === "apply-fallback") {
+    if (acct.endDate.toNumber() * 1000 > nowMs) return; // on-chain end_date not reached yet
+    if (!action.alreadyClaimed && !(await claimWitnessFallback(betsCol, bet.id, { fallbackApplied: action.fallback }))) {
+      return; // lost the race to a quorum vote; the next tick pays the winner
+    }
+    outcome = 2;
+  } else {
+    return;
+  }
+
+  // `destination` is only read for burn/charity fallbacks; otherwise pass a harmless
+  // writable account (it must not be a builtin program id, which gets demoted to read-only).
+  const destination = outcome === 2 && acct.fallbackKind !== 0 ? acct.fallbackDest : BURN_ADDRESS;
+  const sig = await program.methods
+    .settleSocial(outcome)
+    .accountsStrict({
+      oracle: oracle.publicKey,
+      challenger: acct.challenger,
+      opponent: acct.opponent,
+      destination,
+      socialBet,
+      vault: socialVaultPda(socialBet),
+    })
+    .rpc();
+  await markWitnessBetSettled(betsCol, bet.id, sig);
+  console.log(
+    outcome === 2
+      ? `applied ${bet.fallbackApplied ?? bet.fallbackKind ?? "return"} fallback to social bet ${bet.id}: ${sig}`
+      : `settled social bet ${bet.id} (winner=${outcome === 0 ? "challenger" : "acceptor"}): ${sig}`,
+  );
+}
+
+/** Legacy witness bet escrowed in a SportsBet (createBet + acceptBet). */
+async function crankLegacyWitnessBet(
+  betsCol: BetsCollection,
+  usersCol: NonNullable<Awaited<ReturnType<typeof users>>>,
+  bet: BetDoc,
+  now: number,
+): Promise<void> {
+  const betPubkey = new web3.PublicKey(bet.betPda!);
+  const acct = await program.account.sportsBet.fetchNullable(betPubkey);
+  if (!acct) {
+    if (bet.fallbackApplied && bet.onChainState === "locked") {
+      await markWitnessBetSettled(betsCol, bet.id, undefined);
+      console.warn(`chat bet ${bet.id}: escrow already closed; marked fallback settled without a signature`);
+    }
+    return; // already closed (settled/cancelled) on-chain
+  }
+  const vault = sportsVaultPda(betPubkey);
+
+  if ("locked" in acct.state) {
+    // Sports bets are settled from sports feeds by crankSportsBets, not votes.
+    if (bet.validation === "sports" || !acct.opponent) return;
+    const action = witnessCrankAction(bet, now * 1000);
+
+    if (action.type === "block-fallback") {
+      if (await claimWitnessFallback(betsCol, bet.id, { fallbackBlocked: true, fallbackBlockedReason: action.reason })) {
+        console.warn(
+          `OPERATOR ACTION REQUIRED: chat bet ${bet.id} passed its resolve-by date with no verdict; ` +
+          `its ${action.fallback} fallback (dest ${bet.fallbackDest}) cannot run on a legacy SportsBet ` +
+          `(${betPubkey.toBase58()}). Funds remain escrowed; votes are now closed.`,
+        );
+      }
+      return;
+    }
+    if (acct.settleAfter.toNumber() > now) return;
+
+    let homeWon: boolean | null;
+    if (action.type === "settle-winner") {
+      // creator backs "home"/challenger, so home_won === challenger won.
+      homeWon = action.winner === "challenger";
+    } else if (action.type === "apply-fallback" && action.fallback === "return") {
+      if (!action.alreadyClaimed && !(await claimWitnessFallback(betsCol, bet.id, { fallbackApplied: "return" }))) {
+        return; // lost the race to a quorum vote; the next tick pays the winner
+      }
+      homeWon = null; // draw path: process_settle_bet refunds both stakes
+    } else {
+      return;
+    }
+
+    const sig = await program.methods
+      .settleBet(homeWon)
+      .accountsStrict({
+        oracle: oracle.publicKey,
+        creator: acct.creator,
+        opponent: acct.opponent,
+        sportsBet: betPubkey,
+        vault,
+      })
+      .rpc();
+    await markWitnessBetSettled(betsCol, bet.id, sig);
+    console.log(
+      homeWon === null
+        ? `refunded chat bet ${bet.id} (no verdict by resolve-by date): ${sig}`
+        : `settled chat bet ${bet.id} (winner=${bet.resolvedWinner}): ${sig}`,
+    );
+  } else if ("open" in acct.state) {
+    // Accept window elapsed with no opponent — refund the creator and close out.
+    if (acct.startTime.toNumber() > now) return;
+    const challengerUser = await usersCol.findOne({ usernameLower: bet.challenger.toLowerCase() });
+    if (!challengerUser?.walletSecret) return;
+    const sig = await programAs(loadUserKeypair(challengerUser))
+      .methods.cancelBet()
+      .accountsStrict({ creator: acct.creator, sportsBet: betPubkey, vault })
+      .rpc();
+    await betsCol.updateOne(
+      { id: bet.id },
+      { $set: { onChainState: "cancelled", status: "COMPLETED", createSig: bet.createSig ?? sig } },
+    );
+    console.log(`refunded expired chat bet ${bet.id}: ${sig}`);
   }
 }
 
@@ -1604,6 +1752,21 @@ const server = http.createServer(async (req, res) => {
           } catch {
             return json(res, 400, { error: "a valid charity address is required" });
           }
+          // settle_social credits this account directly; a builtin/program (executable)
+          // account can't be credited and would leave the pot stuck in escrow.
+          try {
+            const destPubkey = new web3.PublicKey(fallbackDest);
+            const destInfo = destPubkey.equals(web3.SystemProgram.programId)
+              ? null
+              : await connection.getAccountInfo(destPubkey);
+            if (destPubkey.equals(web3.SystemProgram.programId) || destInfo?.executable) {
+              return json(res, 400, { error: "charity address must be a wallet, not a program" });
+            }
+          } catch (err) {
+            return json(res, 502, {
+              error: `failed to verify charity address: ${err instanceof Error ? err.message : String(err)}`,
+            });
+          }
           charityName = typeof body.charityName === "string" && body.charityName.trim()
             ? body.charityName.trim()
             : undefined;
@@ -1748,6 +1911,9 @@ const server = http.createServer(async (req, res) => {
       if (bet.status !== "PENDING") {
         return json(res, 409, { error: "bet is no longer open for acceptance", bet });
       }
+      if (isWitnessOfferExpired(bet, Date.now())) {
+        return json(res, 409, { error: "this offer expired before it was accepted", bet });
+      }
 
       const linkedMessage = bet.groupId ? null : await messagesCol.findOne({ betId }, { projection: { groupId: 1 } });
       const groupId = bet.groupId ?? linkedMessage?.groupId;
@@ -1809,61 +1975,107 @@ const server = http.createServer(async (req, res) => {
           await requireSolBalanceForBet(challengerKp.publicKey, amountLamports, "challenger");
 
           const gid = gameIdBytes(bet.id);
-          const betPda = sportsBetPda(challengerKp.publicKey, gid);
-          const vault = sportsVaultPda(betPda);
 
-          // Base timestamps on the chain clock (avoids skew); the accept window only has
-          // to span this single atomic transaction.
-          const slot = await connection.getSlot("confirmed");
-          const base = (await connection.getBlockTime(slot)) ?? Math.floor(Date.now() / 1000);
-          const startTime = base + SOCIAL_BET_SETTLE_DELAY_SECS;
-          const settleAfter = startTime + 1;
+          if (SOCIAL_ESCROW_ENABLED && typeof bet.resolveByDate === "number") {
+            // SocialBet escrow: the resolve-by date and fallback are recorded on-chain, so
+            // settle_social can enforce them even if no witness quorum is ever reached.
+            const chainNowSec = await currentUnixTimeSec();
+            const endDate = Math.floor(bet.resolveByDate / 1000);
+            if (endDate <= chainNowSec + SOCIAL_ESCROW_MIN_WINDOW_SECS) {
+              return json(res, 409, { error: "this bet's resolve-by date has passed", bet });
+            }
+            const fallbackKind = bet.fallbackKind ?? "return";
+            const fallbackDest = new web3.PublicKey(bet.fallbackDest ?? BURN_ADDRESS.toBase58());
+            const socialBet = socialBetPda(challengerKp.publicKey, gid);
+            const escrowIx = await programAs(challengerKp)
+              .methods.escrowBet(
+                new BN(amountLamports),
+                oracle.publicKey,
+                gid,
+                new BN(endDate),
+                FALLBACK_KIND_CODE[fallbackKind],
+                fallbackDest,
+              )
+              .accountsStrict({
+                challenger: challengerKp.publicKey,
+                opponent: acceptorKp.publicKey,
+                socialBet,
+                vault: socialVaultPda(socialBet),
+                systemProgram: web3.SystemProgram.programId,
+              })
+              .instruction();
+            const tx = new web3.Transaction().add(escrowIx);
+            const sig = await web3.sendAndConfirmTransaction(connection, tx, [challengerKp, acceptorKp]);
+            Object.assign(update, {
+              onChain: true,
+              onChainKind: "social",
+              betPda: socialBet.toBase58(),
+              commitmentId: socialBet.toBase58(),
+              onChainState: "locked",
+              createSig: sig,
+              acceptSig: sig,
+            });
+          } else {
+            // Legacy SportsBet escrow (docs without a resolve-by date, or social escrow disabled).
+            const betPda = sportsBetPda(challengerKp.publicKey, gid);
+            const vault = sportsVaultPda(betPda);
 
-          const createIx = await programAs(challengerKp)
-            .methods.createBet(
-              new BN(amountLamports),
-              oracle.publicKey,
-              SOCIAL_BET_SPORT,
-              gid,
-              true, // challenger backs the "home"/challenger side
-              new BN(startTime),
-              new BN(settleAfter),
-            )
-            .accountsStrict({
-              creator: challengerKp.publicKey,
-              sportsBet: betPda,
-              vault,
-              systemProgram: web3.SystemProgram.programId,
-            })
-            .instruction();
-          const acceptIx = await programAs(acceptorKp)
-            .methods.acceptBet()
-            .accountsStrict({
-              opponent: acceptorKp.publicKey,
-              sportsBet: betPda,
-              vault,
-              systemProgram: web3.SystemProgram.programId,
-            })
-            .instruction();
+            // Base timestamps on the chain clock (avoids skew); the accept window only has
+            // to span this single atomic transaction.
+            const slot = await connection.getSlot("confirmed");
+            const base = (await connection.getBlockTime(slot)) ?? Math.floor(Date.now() / 1000);
+            const startTime = base + SOCIAL_BET_SETTLE_DELAY_SECS;
+            const settleAfter = startTime + 1;
 
-          const tx = new web3.Transaction().add(createIx, acceptIx);
-          const sig = await web3.sendAndConfirmTransaction(connection, tx, [challengerKp, acceptorKp]);
+            const createIx = await programAs(challengerKp)
+              .methods.createBet(
+                new BN(amountLamports),
+                oracle.publicKey,
+                SOCIAL_BET_SPORT,
+                gid,
+                true, // challenger backs the "home"/challenger side
+                new BN(startTime),
+                new BN(settleAfter),
+              )
+              .accountsStrict({
+                creator: challengerKp.publicKey,
+                sportsBet: betPda,
+                vault,
+                systemProgram: web3.SystemProgram.programId,
+              })
+              .instruction();
+            const acceptIx = await programAs(acceptorKp)
+              .methods.acceptBet()
+              .accountsStrict({
+                opponent: acceptorKp.publicKey,
+                sportsBet: betPda,
+                vault,
+                systemProgram: web3.SystemProgram.programId,
+              })
+              .instruction();
 
-          Object.assign(update, {
-            onChain: true,
-            betPda: betPda.toBase58(),
-            commitmentId: betPda.toBase58(),
-            startTime,
-            settleAfter,
-            onChainState: "locked",
-            createSig: sig,
-            acceptSig: sig,
-          });
+            const tx = new web3.Transaction().add(createIx, acceptIx);
+            const sig = await web3.sendAndConfirmTransaction(connection, tx, [challengerKp, acceptorKp]);
+
+            Object.assign(update, {
+              onChain: true,
+              onChainKind: "sports",
+              betPda: betPda.toBase58(),
+              commitmentId: betPda.toBase58(),
+              startTime,
+              settleAfter,
+              onChainState: "locked",
+              createSig: sig,
+              acceptSig: sig,
+            });
+          }
         }
 
         // The on-chain program already prevents a second acceptance (the PDA/state is
         // unique), so this just records the result.
-        await betsCol.updateOne({ id: betId }, { $set: update });
+        // Funds are escrowed by now, so record unconditionally (and undo an expiry the
+        // crank may have raced in at the deadline).
+        await betsCol.updateOne({ id: betId }, { $set: update, $unset: { offerExpired: "" } });
         const updated = await betsCol.findOne({ id: betId }, { projection: { _id: 0 } });
         return json(res, 200, { bet: updated ? normalizeBetDoc(updated) : { ...bet, ...update } });
       } catch (err) {
@@ -2484,6 +2696,7 @@ function toIMessageBetCard(viewerUsername: string, bet: BetDoc, group: GroupDoc)
     && name.trim().toLowerCase() === viewerLower
   ));
   const canAccept = status === "pending"
+    && !isWitnessOfferExpired(normalized, Date.now())
     && normalized.challenger.toLowerCase() !== viewerLower
     && (
       normalized.acceptor.toLowerCase() === viewerLower
@@ -2521,6 +2734,9 @@ function toIMessageBetCard(viewerUsername: string, bet: BetDoc, group: GroupDoc)
     },
     winner,
     winnerName,
+    outcomeLabel: normalized.offerExpired
+      ? "Offer expired — never accepted"
+      : fallbackLabel(normalized),
     validation: isSports ? "sports" : "witness",
     sports: isSports ? {
       sport: normalized.sport ?? null,
@@ -2532,7 +2748,7 @@ function toIMessageBetCard(viewerUsername: string, bet: BetDoc, group: GroupDoc)
     onChain: {
       enabled: Boolean(normalized.onChain),
       state: normalized.onChainState ?? null,
-      label: getOnChainStateLabel(normalized.onChainState),
+      label: getOnChainStateLabel(normalized.onChainState, normalized),
       signatures: {
         create: normalized.createSig ?? null,
         accept: normalized.acceptSig ?? null,

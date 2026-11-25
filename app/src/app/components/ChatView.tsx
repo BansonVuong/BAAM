@@ -20,6 +20,7 @@ import { SendBetModal, type NewBet } from "./SendBetModal";
 import {
   acceptBet,
   addGroupMemberByUsername,
+  betNoVerdictLabel,
   createGroup,
   createBet,
   explorerTxUrl,
@@ -68,6 +69,8 @@ function countVotes(bet: Bet): { challenger: number; acceptor: number; total: nu
 
 function getResolvedWinner(bet: Bet): BetVoteChoice | undefined {
   if (bet.status === "PENDING") return undefined;
+  // No-verdict outcomes (fallback/expiry) are final; late votes never make a winner.
+  if (bet.fallbackApplied || bet.fallbackBlocked || bet.offerExpired) return undefined;
   if (bet.resolvedWinner) return bet.resolvedWinner;
   const votes = countVotes(bet);
   const threshold = Math.max(1, Number(bet.witnesses) || 1);
@@ -77,7 +80,8 @@ function getResolvedWinner(bet: Bet): BetVoteChoice | undefined {
 }
 
 function isBetCompleted(bet: Bet): boolean {
-  return bet.status === "COMPLETED" || bet.status === "RESOLVED" || Boolean(getResolvedWinner(bet));
+  return bet.status === "COMPLETED" || bet.status === "RESOLVED" || Boolean(getResolvedWinner(bet))
+    || Boolean(bet.fallbackApplied || bet.fallbackBlocked || bet.offerExpired);
 }
 
 function isBetParticipant(bet: Bet, username: string): boolean {
@@ -197,9 +201,17 @@ function EmbeddedBetCard({
   const myVote = getVotesByVoter(bet)[voterName];
   const quorumPct = Math.min(100, (votes.total / witnessThreshold) * 100);
   const isPending = bet.status === "PENDING";
+  const acceptDeadline = [bet.acceptByDate, bet.resolveByDate]
+    .filter((v): v is number => typeof v === "number")
+    .reduce<number | null>((min, v) => (min === null || v < min ? v : min), null);
+  const isOfferPastDeadline = isPending && bet.validation !== "sports"
+    && acceptDeadline !== null && Date.now() >= acceptDeadline;
+  const noVerdictLabel = betNoVerdictLabel(bet)
+    ?? (isOfferPastDeadline ? "Offer expired — never accepted" : null);
   const isAddressedToViewer = bet.acceptor.toLowerCase() === voterName.toLowerCase()
     || bet.acceptor.toLowerCase() === "anyone";
   const canAccept = isPending
+    && !isOfferPastDeadline
     && bet.challenger.toLowerCase() !== voterName.toLowerCase()
     && isAddressedToViewer
     && !isAccepting;
@@ -309,7 +321,13 @@ function EmbeddedBetCard({
         </div>
         )}
 
-        {winner || isResolved ? (
+        {noVerdictLabel ? (
+          <div className="rounded-lg border border-amber-500/25 bg-amber-500/8 px-3 py-2">
+            <span className="text-amber-500" style={{ fontSize: "11px", fontWeight: 700 }}>
+              {noVerdictLabel}
+            </span>
+          </div>
+        ) : winner || isResolved ? (
           <div className="rounded-lg px-3 py-2 border border-[#14F195]/25 bg-[#14F195]/8">
             <span className="text-[#14F195]" style={{ fontSize: "11px", fontWeight: 700 }}>
               {winner ? `Completed — winner: ${winnerName}` : "Completed"}
@@ -390,7 +408,9 @@ function EmbeddedBetCard({
           <div className="flex items-center gap-1.5">
             <Lock size={10} style={{ color: "#9945FF" }} />
             <Mono className="text-muted-foreground" style={{ fontSize: "10px" } as React.CSSProperties}>
-              {onChainLabel(bet.onChainState)}
+              {bet.fallbackApplied || bet.fallbackBlocked
+                ? (betNoVerdictLabel(bet) ?? "").toUpperCase()
+                : onChainLabel(bet.onChainState)}
             </Mono>
           </div>
           <div className="flex items-center gap-2.5">
