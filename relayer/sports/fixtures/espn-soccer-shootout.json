@@ -1,0 +1,54 @@
+{
+  "_source": "GET https://site.api.espn.com/apis/site/v2/sports/soccer/all/summary?event=401933555 (trimmed to fields the parser reads; captured 2026-11-25T14:10:45.562Z)",
+  "header": {
+    "id": "401933555",
+    "league": {
+      "id": "770",
+      "slug": "usa.1",
+      "name": "MLS"
+    },
+    "competitions": [
+      {
+        "id": "401933555",
+        "date": "2026-11-20T03:00Z",
+        "status": {
+          "type": {
+            "id": "47",
+            "name": "STATUS_FINAL_PEN",
+            "state": "post",
+            "completed": true,
+            "description": "Final Score - After Penalties",
+            "detail": "FT-Pens",
+            "shortDetail": "FT-Pens"
+          }
+        },
+        "competitors": [
+          {
+            "id": "9726",
+            "homeAway": "home",
+            "score": "1",
+            "winner": false,
+            "shootoutScore": 2,
+            "team": {
+              "id": "9726",
+              "displayName": "Seattle Sounders FC",
+              "abbreviation": "SEA"
+            }
+          },
+          {
+            "id": "4771",
+            "homeAway": "away",
+            "score": "1",
+            "winner": true,
+            "shootoutScore": 4,
+            "team": {
+              "id": "4771",
+              "displayName": "Real Salt Lake",
+              "abbreviation": "RSL"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

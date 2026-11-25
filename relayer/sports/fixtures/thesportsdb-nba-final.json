@@ -1,0 +1,19 @@
+{
+  "_source": "GET https://www.thesportsdb.com/api/v1/json/<key>/lookupevent.php?id=2601925 (trimmed)",
+  "events": [
+    {
+      "idEvent": "2601925",
+      "strTimestamp": "2026-11-25T03:00:00",
+      "dateEvent": "2026-11-25",
+      "strTime": "03:00:00",
+      "strStatus": "FT",
+      "strPostponed": "no",
+      "strHomeTeam": "Denver Nuggets",
+      "strAwayTeam": "Dallas Mavericks",
+      "intHomeScore": "101",
+      "intAwayScore": "120",
+      "strLeague": "NBA",
+      "idLeague": "4387"
+    }
+  ]
+}

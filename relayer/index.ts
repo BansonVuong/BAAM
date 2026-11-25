@@ -20,6 +20,26 @@
 //   DISCORD_BOT_TOKEN        Discord bot token (needed when DISCORD_ENABLED=true)
 //   DISCORD_APPLICATION_ID   Discord app/client ID (for slash command registration)
 //   WEB_BASE_URL             Public URL of the web app (for Discord embed links)
+//
+// Sports data (relayer/sports/; ESPN's keyless public JSON API is the default feed):
+//   SPORTS_PROVIDER            provider for /scoreboard + new sports bets: espn (default) | thesportsdb
+//   SPORTS_SECONDARY_PROVIDER  optional cross-check before paying a winner: thesportsdb | espn (unset = off).
+//                              Disagreement blocks the bet (sportsSettlementBlocked) for an operator.
+//   SPORTSDB_API_KEY           TheSportsDB key (unset/"3" = disabled; "3" is permanently 403). Needed to
+//                              settle legacy bets created on TheSportsDB ids; "123" is the free test key,
+//                              a paid key is needed for full schedules / cross-checking.
+//   SPORTSDB_API_BASE          default https://www.thesportsdb.com/api/v1/json
+//   ESPN_API_BASE              default https://site.api.espn.com/apis/site/v2/sports
+//   SPORTS_CANCEL_GRACE_HOURS  postponed/cancelled games refund both sides this long after the
+//                              scheduled kickoff (default 48)
+//   SPORTS_RESULT_MAX_AGE_MS   never settle from a provider snapshot older than this (default 180000)
+//   SPORTS_SOCCER_SHOOTOUT     winner (default: shootout winner is paid) | draw (shootouts refund)
+//   SPORTS_SOCCER_LEAGUES      soccer leagues when none is requested (default
+//                              epl,laliga,seriea,bundesliga,ligue1,mls,ucl; worldcup also accepted)
+//   SPORTS_SCOREBOARD_CACHE_MS scoreboard cache TTL (default 60000)
+//   SPORTS_EVENT_CACHE_MS      single-event cache TTL for display/lookups (default 15000)
+//   SPORTS_HTTP_TIMEOUT_MS     per-request timeout (default 8000)
+//   SPORTS_HTTP_RETRIES        retries on timeout/5xx/429 with backoff (default 2)
 
 import "dotenv/config";
 import crypto from "crypto";
@@ -30,7 +50,26 @@ import os from "os";
 import path from "path";
 import { AnchorProvider, BN, Program, Wallet, web3 } from "@anchor-lang/core";
 
-import { fetchGameResult, fetchScoreboard, type Sport } from "./scraper";
+import {
+  decideSportsSettlement,
+  fetchScoreboard,
+  findLeague,
+  getCrossCheckResult,
+  getFinalResult,
+  getSportsProvider,
+  isSportsProviderId,
+  mapLimit,
+  primarySportsProviderId,
+  secondarySportsProviderId,
+  teamNamesMatch,
+  SPORTS_CANCEL_GRACE_MS,
+  SPORTS_RESULT_MAX_AGE_MS,
+  SPORTS_UNAVAILABLE_MESSAGE,
+  type FinalResult,
+  type Sport,
+  type SportsEvent,
+  type SportsProviderId,
+} from "./sports";
 import {
   isDbConfigured, groups, messages, bets, players, profiles, users, imessageConversations, discordConversations, type GroupDoc, type MessageDoc, type ProfileDoc, type PlayerDoc, type UserDoc, type BetDoc, type IMessageConversationDoc, type DiscordConversationDoc,
 } from "./db";
@@ -538,8 +577,46 @@ function decodeSportsBet(
 }
 
 // ── sports bet crank (sports-feed powered) ───────────────────────────────────
+// Settles locked on-chain sports bets from the provider the bet was created on
+// (doc.sportsProvider; legacy docs without it are TheSportsDB). The rules —
+// final-only payouts, postponed/cancelled refunds after a grace window, stale-data
+// rejection, optional cross-provider agreement — live in decideSportsSettlement()
+// (relayer/sports/settlement.ts). Bets the oracle can't settle stay escrowed and
+// are recoverable on-chain with the permissionless refund_stale_bet.
+
+const sportsLogged = new Set<string>();
+function logSportsOnce(key: string, message: string, level: "log" | "warn" | "error" = "log"): void {
+  if (sportsLogged.has(key)) return;
+  if (sportsLogged.size > 5_000) sportsLogged.clear();
+  sportsLogged.add(key);
+  console[level](message);
+}
+/** Blocked bets that have no Mongo doc to carry the flag (pre-Mongo legacy bets). */
+const sportsBlockedInMemory = new Set<string>();
+let sportsCrankRunning = false;
+
+interface SportsSettlementTarget {
+  betPubkey: web3.PublicKey;
+  bet: Awaited<ReturnType<typeof program.account.sportsBet.fetch>>;
+  doc: BetDoc | null;
+  provider: SportsProviderId;
+  eventId: string;
+  sport: Sport;
+  league: string | null;
+}
 
 async function crankSportsBets(): Promise<void> {
+  // The poll loop and POST /settle-bet can overlap; one sweep at a time.
+  if (sportsCrankRunning) return;
+  sportsCrankRunning = true;
+  try {
+    await crankSportsBetsOnce();
+  } finally {
+    sportsCrankRunning = false;
+  }
+}
+
+async function crankSportsBetsOnce(): Promise<void> {
   const slot = await connection.getSlot("confirmed");
   const now  = await connection.getBlockTime(slot);
   if (now === null) return;
@@ -547,50 +624,132 @@ async function crankSportsBets(): Promise<void> {
   const onChainBets = await program.account.sportsBet.all();
   const betsCol = await bets();
 
-  for (const { publicKey: betPubkey, account: bet } of onChainBets) {
-    if (!("locked" in bet.state)) continue;
-    if (bet.settleAfter.toNumber() > now) continue;
-    if (!bet.oraclePubkey.equals(oracle.publicKey)) continue;
-    if (!bet.opponent) continue;
+  const due = onChainBets.filter(({ account: bet }) =>
+    "locked" in bet.state &&
+    bet.settleAfter.toNumber() <= now &&
+    bet.oraclePubkey.equals(oracle.publicKey) &&
+    Boolean(bet.opponent),
+  );
+  if (due.length === 0) return;
 
-    // New sports bets use the unique Mongo bet id as the on-chain game_id so one
-    // creator can place multiple wagers on the same event without a PDA collision.
-    // Legacy sports bets stored the numeric event id directly on-chain.
-    const onChainGameId = decodeGameId(bet.gameId);
-    let gameId = /^\d+$/.test(onChainGameId) ? onChainGameId : "";
-    // sport is stored on-chain as a u8 enum (0=soccer, 1=nba, 2=nfl), but the
-    // linked bet doc can override this (e.g. NHL shares enum id=2).
+  const docsByPda = new Map<string, BetDoc>();
+  if (betsCol) {
+    const docs = await betsCol
+      .find({ betPda: { $in: due.map(({ publicKey }) => publicKey.toBase58()) } }, { projection: { _id: 0 } })
+      .toArray();
+    for (const doc of docs) if (doc.betPda) docsByPda.set(doc.betPda, doc);
+  }
+
+  const targets: SportsSettlementTarget[] = [];
+  for (const { publicKey: betPubkey, account: bet } of due) {
+    const pda = betPubkey.toBase58();
+    const doc = docsByPda.get(pda) ?? null;
+    // sport is stored on-chain as a u8 enum (0=soccer, 1=nba, 2=nfl); the doc keeps
+    // the true sport (NHL shares id 2).
     let sport: Sport = ON_CHAIN_SPORT_BY_INDEX[bet.sport as number] ?? "soccer";
-    if (betsCol) {
-      const linkedBet = await betsCol.findOne(
-        { betPda: betPubkey.toBase58() },
-        { projection: { _id: 0, validation: 1, sport: 1, espnGameId: 1 } },
-      );
-      if (linkedBet?.validation === "sports" && isSupportedSport(linkedBet.sport)) {
-        sport = linkedBet.sport;
-        gameId = linkedBet.espnGameId?.trim() ?? gameId;
+    let provider: SportsProviderId;
+    let eventId: string;
+    let league: string | null = null;
+    if (doc) {
+      // Witness/chat bets also live in SportsBet accounts; crankWitnessBets settles those.
+      if (doc.validation !== "sports") continue;
+      if (doc.sportsSettlementBlocked) {
+        logSportsOnce(`blocked:${pda}`, `sports bet ${pda} (${doc.id}) is blocked for an operator: ${doc.sportsSettlementBlockedReason ?? "no reason recorded"}`, "warn");
+        continue;
       }
+      if (isSupportedSport(doc.sport)) sport = doc.sport;
+      // Docs without sportsProvider predate the provider abstraction: their
+      // espnGameId holds a TheSportsDB event id despite the field name.
+      provider = isSportsProviderId(doc.sportsProvider) ? doc.sportsProvider : "thesportsdb";
+      eventId = `${doc.sportsEventId ?? doc.espnGameId ?? ""}`.trim();
+      league = doc.sportsLeague ?? null;
+    } else {
+      // Pre-Mongo legacy bets stored the TheSportsDB event id directly on-chain.
+      const onChainGameId = decodeGameId(bet.gameId);
+      if (!/^\d+$/.test(onChainGameId)) continue;
+      if (sportsBlockedInMemory.has(pda)) continue;
+      provider = "thesportsdb";
+      eventId = onChainGameId;
     }
-    // Chat/witness bets also use a non-numeric id, but have no linked sports
-    // event and are settled by crankWitnessBets instead.
-    if (!/^\d+$/.test(gameId)) continue;
+    if (!/^\d+$/.test(eventId)) {
+      logSportsOnce(`badid:${pda}`, `sports bet ${pda} has no usable event id; leaving it for refund_stale_bet`, "warn");
+      continue;
+    }
+    if (!getSportsProvider(provider).isConfigured()) {
+      logSportsOnce(
+        `unconfigured:${pda}`,
+        `sports bet ${pda} settles against ${provider} event ${eventId}, but ${provider} is not configured ` +
+        `(set SPORTSDB_API_KEY). Not guessing a result; it stays escrowed until configured or refunded via refund_stale_bet.`,
+        "warn",
+      );
+      continue;
+    }
+    targets.push({ betPubkey, bet, doc, provider, eventId, sport, league });
+  }
+  if (targets.length === 0) return;
 
-    let result;
-    try {
-      result = await fetchGameResult(sport, gameId);
-    } catch (err) {
-      console.error(`sports data fetch error for game ${gameId} (${sport}):`, err);
+  // One fresh lookup per distinct event per sweep, a few at a time.
+  const eventKey = (t: SportsSettlementTarget) => `${t.provider}:${t.sport}:${t.eventId}`;
+  const uniqueTargets = Array.from(new Map(targets.map((t) => [eventKey(t), t])).values());
+  const secondaryId = secondarySportsProviderId();
+  const results = new Map<string, { primary: FinalResult; secondary?: FinalResult | null }>();
+  await mapLimit(uniqueTargets, 4, async (t) => {
+    const primary = await getFinalResult(t.provider, t.eventId, { sport: t.sport, league: t.league });
+    let secondary: FinalResult | null | undefined;
+    if (secondaryId && secondaryId !== t.provider && primary.status === "final") {
+      secondary = primary.homeTeam && primary.awayTeam && primary.startTimeMs !== null
+        ? await getCrossCheckResult(secondaryId, {
+            sport: t.sport,
+            league: primary.league ?? t.league,
+            homeTeam: primary.homeTeam,
+            awayTeam: primary.awayTeam,
+            startTimeMs: primary.startTimeMs,
+          })
+        : null;
+    }
+    results.set(eventKey(t), { primary, secondary });
+  });
+
+  for (const t of targets) {
+    const { betPubkey, bet, doc } = t;
+    const pda = betPubkey.toBase58();
+    const { primary, secondary } = results.get(eventKey(t))!;
+    const action = decideSportsSettlement({
+      nowMs: Date.now(),
+      scheduledKickoffMs: bet.startTime.toNumber() * 1000,
+      acceptedAtMs: doc?.acceptedAt ?? null,
+      expected: { homeTeamId: doc?.sportsHomeTeamId, awayTeamId: doc?.sportsAwayTeamId },
+      primary,
+      secondary,
+      graceMs: SPORTS_CANCEL_GRACE_MS,
+      maxResultAgeMs: SPORTS_RESULT_MAX_AGE_MS,
+    });
+
+    if (action.type === "wait") {
+      logSportsOnce(`wait:${pda}:${primary.status}:${action.reason}`, `sports bet ${pda} (${t.provider} ${t.eventId}): waiting — ${action.reason}`);
       continue;
     }
 
-    if (!result) {
-      console.log(`Game ${gameId} (${sport}) not yet final — skipping.`);
+    if (action.type === "block") {
+      console.error(
+        `OPERATOR ACTION REQUIRED: sports bet ${pda}${doc ? ` (${doc.id})` : ""} on ${t.provider} event ${t.eventId} ` +
+        `was NOT settled: ${action.reason}. Funds stay escrowed. Verify the result manually, then unset ` +
+        `sportsSettlementBlocked to retry, or let refund_stale_bet refund both sides.`,
+      );
+      if (betsCol && doc) {
+        await betsCol.updateOne(
+          { betPda: pda },
+          { $set: { sportsSettlementBlocked: true, sportsSettlementBlockedReason: action.reason, sportsSettlementBlockedAt: Date.now() } },
+        );
+      } else {
+        sportsBlockedInMemory.add(pda);
+      }
       continue;
     }
 
     console.log(
-      `Game ${gameId} final: ${result.awayTeam} ${result.awayScore} @ ` +
-      `${result.homeTeam} ${result.homeScore} → homeWon=${result.homeWon}`
+      `Settling sports bet ${pda} (${t.provider} ${t.eventId}): ${primary.awayTeam} ${primary.awayScore} @ ` +
+      `${primary.homeTeam} ${primary.homeScore} — ${action.reason} → homeWon=${action.homeWon}`,
     );
 
     const [vault] = web3.PublicKey.findProgramAddressSync(
@@ -600,38 +759,50 @@ async function crankSportsBets(): Promise<void> {
 
     try {
       const sig = await program.methods
-        .settleBet(result.homeWon === null ? null : result.homeWon)
+        .settleBet(action.homeWon)
         .accountsStrict({
           oracle:    oracle.publicKey,
           creator:   bet.creator,
-          opponent:  bet.opponent,
+          opponent:  bet.opponent!,
           sportsBet: betPubkey,
           vault,
         })
         .rpc();
-      console.log(`Settled bet ${betPubkey.toBase58()}: ${sig}`);
+      console.log(`Settled bet ${pda}: ${sig}`);
 
       // Mirror the on-chain result back to the chat bet doc so the UI updates.
       // The challenger is the on-chain creator; they back home iff creatorBacksHome.
       if (betsCol) {
         const resolvedWinner =
-          result.homeWon === null
+          action.homeWon === null
             ? undefined
-            : bet.creatorBacksHome === result.homeWon
+            : bet.creatorBacksHome === action.homeWon
               ? "challenger"
               : "acceptor";
         await betsCol.updateOne(
-          { betPda: betPubkey.toBase58() },
+          { betPda: pda },
           { $set: {
             status: "COMPLETED",
             onChainState: "settled",
             settleSig: sig,
+            sportsResult: {
+              provider: primary.provider,
+              eventId: primary.eventId,
+              status: primary.status,
+              providerStatus: primary.providerStatus,
+              homeScore: primary.homeScore,
+              awayScore: primary.awayScore,
+              homeWon: action.homeWon,
+              decidedBy: primary.decidedBy,
+              fetchedAtMs: primary.fetchedAtMs,
+              reason: action.reason,
+            },
             ...(resolvedWinner ? { resolvedWinner } : {}),
           } },
         );
       }
     } catch (err) {
-      console.error(`settle failed for ${betPubkey.toBase58()}:`, err);
+      console.error(`settle failed for ${pda}:`, err);
     }
   }
 }
@@ -980,8 +1151,9 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { commitmentId: body.commitmentId, signature, explorer: explorerUrl(signature) });
     }
 
-    // GET /scoreboard?sport=nba|nfl|nhl|soccer[&league=epl|laliga|mls|worldcup|<leagueId>]
-    // Returns upcoming games currently in the sports-bet creation window.
+    // GET /scoreboard?sport=nba|nfl|nhl|soccer[&league=epl|laliga|seriea|bundesliga|ligue1|mls|ucl|worldcup]
+    // Returns upcoming games currently in the sports-bet creation window. Soccer
+    // without a league merges the default league set (SPORTS_SOCCER_LEAGUES).
     if (req.method === "GET" && req.url?.startsWith("/scoreboard")) {
       const params = new URL(req.url, "http://x").searchParams;
       const sport  = (params.get("sport") ?? "nba") as Sport;
@@ -990,34 +1162,72 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: "sport must be soccer | nba | nfl | nhl" });
       const nowMs = Date.now();
       const betWindowEndMs = nowMs + SPORTS_BET_CREATE_WINDOW_SECS * 1000;
-      const scrapedGames = await fetchScoreboard(sport, league, {
-        daysAhead: SPORTS_BET_SCOREBOARD_LOOKAHEAD_DAYS,
-        includeStarted: false,
-        maxGames: 120,
-      });
+      let scrapedGames: Awaited<ReturnType<typeof fetchScoreboard>>;
+      try {
+        scrapedGames = await fetchScoreboard(sport, league, {
+          // Games past the create window are filtered out below, so don't fetch them.
+          daysAhead: Math.min(SPORTS_BET_SCOREBOARD_LOOKAHEAD_DAYS, SPORTS_BET_CREATE_WINDOW_SECS / 86_400),
+          includeStarted: false,
+          maxGames: 120,
+        });
+      } catch (err) {
+        console.error(`[sports] /scoreboard ${sport}${league ? `/${league}` : ""} failed:`, err instanceof Error ? err.message : err);
+        return json(res, 502, { error: SPORTS_UNAVAILABLE_MESSAGE });
+      }
       const games = scrapedGames
-        .filter((game) => !game.isFinal)
+        .filter((game) => game.state === "scheduled")
         .filter((game): game is typeof game & { startTimeMs: number } => typeof game.startTimeMs === "number")
-        .filter((game) => game.startTimeMs <= betWindowEndMs);
+        .filter((game) => game.startTimeMs > nowMs && game.startTimeMs <= betWindowEndMs);
       return json(res, 200, {
         sport,
         league: league ?? null,
         games,
         bettingWindowSeconds: SPORTS_BET_CREATE_WINDOW_SECS,
+        provider: primarySportsProviderId(),
       });
     }
 
-    // GET /game?sport=nba&id=401584793  — check one game's result
+    // GET /game?sport=nba&id=401584793[&provider=espn|thesportsdb][&league=epl]
+    // `result` stays null until the game is final (legacy shape); `event` carries the
+    // normalized live status for any state.
     if (req.method === "GET" && req.url?.startsWith("/game")) {
       const params = new URL(req.url, "http://x").searchParams;
       const sport  = (params.get("sport") ?? "nba") as Sport;
-      const gameId = params.get("id") ?? "";
+      const gameId = (params.get("id") ?? "").trim();
+      const providerParam = params.get("provider");
+      const provider = isSportsProviderId(providerParam) ? providerParam : primarySportsProviderId();
       if (!gameId) return json(res, 400, { error: "id is required" });
+      if (!/^\d{1,20}$/.test(gameId)) return json(res, 400, { error: "id must be a numeric event id" });
       if (!isSupportedSport(sport)) {
         return json(res, 400, { error: "sport must be soccer | nba | nfl | nhl" });
       }
-      const result = await fetchGameResult(sport, gameId);
-      return json(res, 200, { result });
+      if (!getSportsProvider(provider).isConfigured()) {
+        return json(res, 400, { error: "That game source isn't available." });
+      }
+      const lookup = await getFinalResult(provider, gameId, {
+        sport,
+        league: params.get("league"),
+        maxAgeMs: 15_000,
+      });
+      if (lookup.error && lookup.error !== "event not found") {
+        console.error(`[sports] /game ${provider} ${sport} ${gameId} failed: ${lookup.error}`);
+        return json(res, 502, { error: SPORTS_UNAVAILABLE_MESSAGE });
+      }
+      if (lookup.error) return json(res, 200, { result: null, provider, event: null });
+      const result = lookup.status === "final" && lookup.homeScore !== null && lookup.awayScore !== null
+        ? {
+            gameId,
+            sport,
+            homeWon: lookup.isDraw ? null : lookup.homeWon,
+            homeTeam: lookup.homeTeam ?? "Home",
+            awayTeam: lookup.awayTeam ?? "Away",
+            homeScore: lookup.homeScore,
+            awayScore: lookup.awayScore,
+            isFinal: true,
+            status: lookup.statusLabel,
+          }
+        : null;
+      return json(res, 200, { result, provider, event: lookup });
     }
 
     // GET /sports-bets  — all on-chain sports bets (1v1 / group-chat wagers)
@@ -1581,6 +1791,7 @@ const server = http.createServer(async (req, res) => {
       let homeTeam = isSports ? `${body.homeTeam ?? ""}`.trim() : undefined;
       let awayTeam = isSports ? `${body.awayTeam ?? ""}`.trim() : undefined;
       let sportsKickoffSec: number | null = null;
+      let sportsEvent: SportsEvent | null = null;
 
       if (isDiscord && !DISCORD_ENABLED) {
         return json(res, 400, { error: "Discord integration is disabled" });
@@ -1648,31 +1859,48 @@ const server = http.createServer(async (req, res) => {
           return json(res, 400, { error: "sport must be soccer | nba | nfl | nhl" });
         }
         const sportsSport = sport;
-        // crankSportsBets only settles bets whose on-chain game id is numeric.
-        if (!/^\d+$/.test(sportsGameId)) {
-          return json(res, 400, { error: "gameId must be a numeric TheSportsDB event id" });
+        // Kickoff time, teams and league always come from the provider (never the
+        // client): the on-chain start_time gates accept_bet, so a client-supplied
+        // kickoff would let someone accept after the game began.
+        if (!/^\d{1,20}$/.test(sportsGameId)) {
+          return json(res, 400, { error: "gameId must be a numeric event id" });
         }
-        let upcomingGames: Awaited<ReturnType<typeof fetchScoreboard>> = [];
+        const sportsProviderId = primarySportsProviderId();
+        const requestedProvider = body.sportsProvider ?? body.provider;
+        if (requestedProvider !== undefined && requestedProvider !== sportsProviderId) {
+          return json(res, 409, { error: "The game list changed. Refresh and pick the game again." });
+        }
+        let selectedGame: SportsEvent | null;
         try {
-          upcomingGames = await fetchScoreboard(sportsSport, undefined, {
-            daysAhead: SPORTS_BET_SCOREBOARD_LOOKAHEAD_DAYS,
-            includeStarted: true,
-            maxGames: 200,
+          selectedGame = await getSportsProvider(sportsProviderId).getEvent(sportsSport, sportsGameId, {
+            league: typeof body.league === "string" ? body.league : null,
+            maxAgeMs: 15_000,
           });
         } catch (err) {
-          return json(res, 502, {
-            error: `failed to fetch upcoming games: ${err instanceof Error ? err.message : String(err)}`,
-          });
+          console.error(`[sports] POST /bets lookup ${sportsProviderId} ${sportsSport} ${sportsGameId} failed:`, err instanceof Error ? err.message : err);
+          return json(res, 502, { error: SPORTS_UNAVAILABLE_MESSAGE });
         }
-        const selectedGame = upcomingGames.find((game) => game.gameId === sportsGameId);
-        if (!selectedGame) {
+        // Soccer is limited to the leagues we list on the board (no obscure feeds).
+        if (!selectedGame || (sportsSport === "soccer" && !findLeague("soccer", selectedGame.league))) {
           return json(res, 400, { error: "selected game is not available on the upcoming board" });
         }
-        if (selectedGame.isFinal) {
+        if (selectedGame.status === "final") {
           return json(res, 400, { error: "selected game is already final" });
+        }
+        if (selectedGame.status !== "scheduled") {
+          return json(res, 400, { error: "selected game has already started or is no longer scheduled" });
         }
         if (typeof selectedGame.startTimeMs !== "number" || !Number.isFinite(selectedGame.startTimeMs)) {
           return json(res, 400, { error: "selected game kickoff time is unavailable" });
+        }
+        // If the client echoed the teams it showed, make sure it was this game.
+        const clientHome = typeof body.homeTeam === "string" ? body.homeTeam.trim() : "";
+        const clientAway = typeof body.awayTeam === "string" ? body.awayTeam.trim() : "";
+        if (
+          (clientHome && !teamNamesMatch(clientHome, selectedGame.homeTeam)) ||
+          (clientAway && !teamNamesMatch(clientAway, selectedGame.awayTeam))
+        ) {
+          return json(res, 409, { error: "The game list changed. Refresh and pick the game again." });
         }
         const chainNowSec = await currentUnixTimeSec();
         const kickoffSec = Math.floor(selectedGame.startTimeMs / 1000);
@@ -1685,8 +1913,9 @@ const server = http.createServer(async (req, res) => {
           });
         }
         sportsKickoffSec = kickoffSec;
-        homeTeam = selectedGame.homeTeam?.trim() || homeTeam;
-        awayTeam = selectedGame.awayTeam?.trim() || awayTeam;
+        sportsEvent = selectedGame;
+        homeTeam = selectedGame.homeTeam.trim();
+        awayTeam = selectedGame.awayTeam.trim();
         if (!homeTeam || !awayTeam) {
           return json(res, 400, { error: "selected game teams are unavailable" });
         }
@@ -1802,7 +2031,14 @@ const server = http.createServer(async (req, res) => {
         ...(isSports ? {
           validation: "sports" as const,
           sport: sport as BetDoc["sport"],
+          // espnGameId is mirrored for older clients; sportsProvider marks this as a
+          // post-migration bet (legacy docs without it hold TheSportsDB ids).
           espnGameId: sportsGameId,
+          sportsProvider: sportsEvent?.provider,
+          sportsEventId: sportsGameId,
+          sportsLeague: sportsEvent?.league ?? null,
+          sportsHomeTeamId: sportsEvent?.homeTeamId ?? null,
+          sportsAwayTeamId: sportsEvent?.awayTeamId ?? null,
           homeTeam,
           awayTeam,
           challengerBacksHome,
@@ -1822,8 +2058,8 @@ const server = http.createServer(async (req, res) => {
           }
           const startTime = sportsKickoffSec;
           const settleAfter = startTime + Math.max(1, SPORTS_BET_SETTLE_AFTER_SECS);
-          // Use the unique database bet id on-chain. The real numeric event id
-          // remains in espnGameId and is used by crankSportsBets for settlement.
+          // Use the unique database bet id on-chain. The provider event id lives in
+          // sportsProvider + sportsEventId and is used by crankSportsBets for settlement.
           const onChainSport = ON_CHAIN_SPORT_INDEX[sport as Sport];
           const backsHome    = challengerBacksHome ?? true;
           const gid = gameIdBytes(betDoc.id);
@@ -1961,6 +2197,36 @@ const server = http.createServer(async (req, res) => {
           // side, and the program enforces accept-before-kickoff.
           if (!bet.onChain || !bet.betPda || bet.onChainState !== "open") {
             return json(res, 409, { error: "this sports bet is no longer open for acceptance", bet });
+          }
+          // The on-chain start_time is the kickoff recorded at creation. Re-check the
+          // provider so a game moved earlier (or already underway / postponed) can't be
+          // accepted with the result partly known. Legacy TheSportsDB bets rely on the
+          // program's check alone when that provider isn't configured.
+          const sportsProviderId = isSportsProviderId(bet.sportsProvider) ? bet.sportsProvider : null;
+          const sportsEventId = `${bet.sportsEventId ?? ""}`.trim();
+          if (sportsProviderId && sportsEventId && getSportsProvider(sportsProviderId).isConfigured()) {
+            let liveGame: SportsEvent | null;
+            try {
+              liveGame = await getSportsProvider(sportsProviderId).getEvent(
+                isSupportedSport(bet.sport) ? bet.sport : null,
+                sportsEventId,
+                { league: bet.sportsLeague ?? null, maxAgeMs: 15_000 },
+              );
+            } catch (err) {
+              console.error(`[sports] accept lookup ${sportsProviderId} ${sportsEventId} failed:`, err instanceof Error ? err.message : err);
+              return json(res, 503, { error: "Couldn't verify the game right now. Try again in a minute." });
+            }
+            if (
+              !liveGame ||
+              liveGame.status !== "scheduled" ||
+              liveGame.startTimeMs === null ||
+              liveGame.startTimeMs <= Date.now()
+            ) {
+              return json(res, 409, {
+                error: "This game has already started or was rescheduled, so the bet can't be accepted.",
+                bet,
+              });
+            }
           }
           const betPda = new web3.PublicKey(bet.betPda);
           const vault = sportsVaultPda(betPda);

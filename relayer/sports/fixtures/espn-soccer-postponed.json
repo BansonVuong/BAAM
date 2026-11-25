@@ -1,0 +1,52 @@
+{
+  "_source": "GET https://site.api.espn.com/apis/site/v2/sports/soccer/all/summary?event=401913229 (trimmed to fields the parser reads; captured 2026-11-25T14:10:45.753Z)",
+  "header": {
+    "id": "401913229",
+    "league": {
+      "id": "18992",
+      "slug": "aus.w.1",
+      "name": "Australian A-League Women"
+    },
+    "competitions": [
+      {
+        "id": "401913229",
+        "date": "2026-11-21T20:00Z",
+        "status": {
+          "type": {
+            "id": "6",
+            "name": "STATUS_POSTPONED",
+            "state": "post",
+            "completed": false,
+            "description": "Postponed",
+            "detail": "Postponed",
+            "shortDetail": "Postponed"
+          }
+        },
+        "competitors": [
+          {
+            "id": "20287",
+            "homeAway": "home",
+            "score": "0",
+            "winner": false,
+            "team": {
+              "id": "20287",
+              "displayName": "Newcastle Jets ",
+              "abbreviation": "NEW"
+            }
+          },
+          {
+            "id": "20286",
+            "homeAway": "away",
+            "score": "0",
+            "winner": false,
+            "team": {
+              "id": "20286",
+              "displayName": "Adelaide United ",
+              "abbreviation": "ADE"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
