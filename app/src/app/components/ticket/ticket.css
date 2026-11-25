@@ -1,0 +1,102 @@
+/*
+ * Ticket visuals. Together with Ticket.tsx this is the only place ticket
+ * styling lives (DESIGN.md: "The ticket"). The notch mask and stamp motion
+ * need real CSS; everything else in Ticket.tsx is Tailwind.
+ */
+
+.ticket {
+  --stub: 104px;
+  --notch: 9px;
+  --stock: var(--stock-offer);
+  /* Drop-shadow follows the masked (notched) outline; box-shadow would not. */
+  filter:
+    drop-shadow(0 1px 0 var(--ticket-shadow-near))
+    drop-shadow(0 7px 9px var(--ticket-shadow-far));
+}
+
+.ticket[data-variant="compact"] {
+  --stub: 84px;
+  --notch: 7px;
+  filter:
+    drop-shadow(0 1px 0 var(--ticket-shadow-near))
+    drop-shadow(0 4px 5px var(--ticket-shadow-far));
+}
+
+.ticket[data-stock="offer"]   { --stock: var(--stock-offer); }
+.ticket[data-stock="live"]    { --stock: var(--stock-live); }
+.ticket[data-stock="verdict"] { --stock: var(--stock-verdict); }
+.ticket[data-stock="done"]    { --stock: var(--stock-done); }
+
+.ticket[data-from="offer"]   { --ticket-from: var(--stock-offer); }
+.ticket[data-from="live"]    { --ticket-from: var(--stock-live); }
+.ticket[data-from="verdict"] { --ticket-from: var(--stock-verdict); }
+
+.ticket-paper {
+  background-color: var(--stock);
+  color: var(--ticket-ink);
+  border-radius: 14px;
+  /* Two semicircle notches where the perforation meets the top and bottom edges. */
+  -webkit-mask:
+    radial-gradient(circle var(--notch) at calc(100% - var(--stub)) 0, #0000 97%, #000) top / 100% 51% no-repeat,
+    radial-gradient(circle var(--notch) at calc(100% - var(--stub)) 100%, #0000 97%, #000) bottom / 100% 51% no-repeat;
+  mask:
+    radial-gradient(circle var(--notch) at calc(100% - var(--stub)) 0, #0000 97%, #000) top / 100% 51% no-repeat,
+    radial-gradient(circle var(--notch) at calc(100% - var(--stub)) 100%, #0000 97%, #000) bottom / 100% 51% no-repeat;
+}
+
+.ticket-stub {
+  width: var(--stub);
+}
+
+/* Perforation: a dashed rule that stops short of the notches. */
+.ticket-perf {
+  position: absolute;
+  top: calc(var(--notch) + 4px);
+  bottom: calc(var(--notch) + 4px);
+  left: -1px;
+  width: 2px;
+  background-image: linear-gradient(to bottom, rgba(26, 29, 53, 0.34) 55%, transparent 0);
+  background-size: 2px 9px;
+}
+
+.ticket-stamp {
+  transform: rotate(-8deg);
+  mix-blend-mode: multiply;
+}
+
+/* The one orchestrated motion: the stamp lands, then the stock settles. */
+@keyframes ticket-stamp-land {
+  0%   { opacity: 0; transform: scale(1.6) rotate(-14deg); }
+  70%  { opacity: 1; transform: scale(0.94) rotate(-7.5deg); }
+  100% { opacity: 1; transform: scale(1) rotate(-8deg); }
+}
+
+@keyframes ticket-stock-settle {
+  from { background-color: var(--ticket-from, var(--stock-done)); }
+  to   { background-color: var(--stock-done); }
+}
+
+.ticket[data-landing] .ticket-stamp {
+  animation: ticket-stamp-land 220ms cubic-bezier(0.25, 0.9, 0.35, 1.25) both;
+}
+
+.ticket[data-landing] .ticket-paper {
+  animation: ticket-stock-settle 400ms ease-out 220ms both;
+}
+
+/* Waiting to land (not yet scrolled into view): hide the stamp, keep the old stock. */
+.ticket[data-pending-land] .ticket-stamp { opacity: 0; }
+.ticket[data-pending-land] .ticket-paper { background-color: var(--ticket-from, var(--stock-done)); }
+
+.ticket-highlight {
+  outline: 3px solid var(--ink);
+  outline-offset: 4px;
+  border-radius: 16px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ticket[data-landing] .ticket-stamp,
+  .ticket[data-landing] .ticket-paper { animation: none; }
+  .ticket[data-pending-land] .ticket-stamp { opacity: 1; }
+  .ticket[data-pending-land] .ticket-paper { background-color: var(--stock-done); }
+}

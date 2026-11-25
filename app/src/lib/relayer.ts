@@ -419,6 +419,11 @@ export function createBet(input: {
   resolveByDate?: number;
   /** Witness (non-sports) bets: unix-ms accept deadline; omit/null for indefinite. */
   acceptByDate?: number | null;
+  /** Witness (non-sports) bets: what happens to the pot with no verdict by resolveByDate. */
+  fallbackKind?: "return" | "burn" | "charity";
+  /** Required wallet address when fallbackKind is "charity". */
+  charityAddress?: string;
+  charityName?: string;
   // Sports bets (internal DEV type): settled by the sports feed.
   sport?: SportKind;
   gameId?: string;

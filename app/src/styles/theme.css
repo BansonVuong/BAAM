@@ -1,196 +1,180 @@
-@custom-variant dark (&:is(.dark *));
+/* BAAM "Tickets" design tokens — see app/DESIGN.md. */
 
-/* ─── Light Mode ─────────────────────────────── */
+/* ─── Light (default) ───────────────────────────── */
 :root {
-  --font-size: 16px;
+  color-scheme: light;
 
-  --background:          #F8FAFC;
-  --foreground:          #0F172A;
-  --card:                #FFFFFF;
-  --card-foreground:     #0F172A;
-  --popover:             #FFFFFF;
-  --popover-foreground:  #0F172A;
+  --counter:        #E6EAEE;
+  --paper:          #FBFCFD;
+  --ink:            #1A1D35;
+  --ink-soft:       #5A5F7A;
+  --rule:           #D3D8E0;
 
-  --primary:             #7C3AED;
-  --primary-foreground:  #FFFFFF;
-  --secondary:           #F1F5F9;
-  --secondary-foreground:#334155;
-  --muted:               #F1F5F9;
-  --muted-foreground:    #64748B;
-  --accent:              #EDE9FE;
-  --accent-foreground:   #5B21B6;
+  --stock-offer:    #FFD84D;
+  --stock-live:     #9FE7C4;
+  --stock-verdict:  #CBB8FF;
+  --stock-done:     #E3E6EA;
 
-  --destructive:         #FF4A4A;
-  --destructive-foreground: #FFFFFF;
+  /* Ticket ink is identical in both themes: tickets are paper. */
+  --ticket-ink:      #1A1D35;
+  --ticket-ink-soft: #3F4360;
+  --ticket-paper:    #FBFCFD;
 
-  --border:              #E2E8F0;
-  --input:               #F1F5F9;
-  --input-background:    #F1F5F9;
-  --switch-background:   #CBD5E1;
+  --stamp-win:      #D7263D;
+  --stamp-neutral:  #2B4EA2;
+  /* Destructive/error text off-ticket. Same red as the stamp in light mode;
+     lifted in dark mode so small text keeps AA contrast on dark paper. */
+  --danger:         #D7263D;
 
-  --ring:                #7C3AED;
-  --radius:              0.5rem;
-
-  --font-weight-medium:  500;
-  --font-weight-normal:  400;
-
-  /* Chart tokens */
-  --chart-1: #7C3AED;
-  --chart-2: #10B981;
-  --chart-3: #F59E0B;
-  --chart-4: #EF4444;
-  --chart-5: #3B82F6;
-
-  /* Sidebar */
-  --sidebar:                  #F8FAFC;
-  --sidebar-foreground:       #0F172A;
-  --sidebar-primary:          #7C3AED;
-  --sidebar-primary-foreground:#FFFFFF;
-  --sidebar-accent:           #EDE9FE;
-  --sidebar-accent-foreground:#5B21B6;
-  --sidebar-border:           #E2E8F0;
-  --sidebar-ring:             #7C3AED;
-
-  /* Brand tokens (always accessible, both modes) */
-  --sol-purple:  #9945FF;
-  --sol-teal:    #14F195;
-  --crimson:     #FF4A4A;
-  --amber-gold:  #FFB800;
-  --obsidian:    #0B0F19;
-  --steel-blue:  #161D30;
-  --hairline:    #24324F;
-  --secondary-text: #8A99AD;
-  --disabled-text:  #43536A;
+  --ticket-shadow-near: rgba(26, 29, 53, 0.08);
+  --ticket-shadow-far:  rgba(26, 29, 53, 0.30);
+  --scrim:              rgba(26, 29, 53, 0.42);
+  --hover:              rgba(26, 29, 53, 0.06);
 }
 
-/* ─── Dark Mode ──────────────────────────────── */
+/* ─── Dark ──────────────────────────────────────── */
 .dark {
-  --background:          #04070F;
-  --foreground:          #E8EEF8;
-  --card:                #0B1220;
-  --card-foreground:     #EDF2FF;
-  --popover:             #0D1627;
-  --popover-foreground:  #EDF2FF;
+  color-scheme: dark;
 
-  --primary:             #7A5CFF;
-  --primary-foreground:  #FFFFFF;
-  --secondary:           #111B2D;
-  --secondary-foreground:#A4B3CC;
-  --muted:               #0C1628;
-  --muted-foreground:    #9AAACC;
-  --accent:              #16243F;
-  --accent-foreground:   #DCE8FF;
+  --counter:        #121428;
+  --paper:          #1B1E36;
+  --ink:            #F1F2F8;
+  --ink-soft:       #A3A8C3;
+  --rule:           #2D3150;
 
-  --destructive:         #FF4A4A;
-  --destructive-foreground: #FFFFFF;
+  --stock-offer:    #F2CC45;
+  --stock-live:     #8EDBB6;
+  --stock-verdict:  #BBA6F5;
+  --stock-done:     #C9CDD6;
 
-  --border:              #1A2740;
-  --input:               #0B1220;
-  --input-background:    #101C31;
-  --switch-background:   #384A67;
+  --danger:         #FF7F8E;
 
-  --ring:                #7A5CFF;
-
-  --chart-1: #7A5CFF;
-  --chart-2: #34D399;
-  --chart-3: #60A5FA;
-  --chart-4: #F59E0B;
-  --chart-5: #FB7185;
-
-  --sidebar:                  #070F1D;
-  --sidebar-foreground:       #EDF2FF;
-  --sidebar-primary:          #7A5CFF;
-  --sidebar-primary-foreground:#FFFFFF;
-  --sidebar-accent:           #142238;
-  --sidebar-accent-foreground:#A4B3CC;
-  --sidebar-border:           #1A2740;
-  --sidebar-ring:             #7A5CFF;
+  --ticket-shadow-near: rgba(0, 0, 0, 0.35);
+  --ticket-shadow-far:  rgba(0, 0, 0, 0.75);
+  --scrim:              rgba(6, 7, 18, 0.72);
+  --hover:              rgba(241, 242, 248, 0.07);
 }
 
-/* ─── Tailwind theme mapping ─────────────────── */
+/* ─── Tailwind mapping ──────────────────────────── */
 @theme inline {
-  --color-background:              var(--background);
-  --color-foreground:              var(--foreground);
-  --color-card:                    var(--card);
-  --color-card-foreground:         var(--card-foreground);
-  --color-popover:                 var(--popover);
-  --color-popover-foreground:      var(--popover-foreground);
-  --color-primary:                 var(--primary);
-  --color-primary-foreground:      var(--primary-foreground);
-  --color-secondary:               var(--secondary);
-  --color-secondary-foreground:    var(--secondary-foreground);
-  --color-muted:                   var(--muted);
-  --color-muted-foreground:        var(--muted-foreground);
-  --color-accent:                  var(--accent);
-  --color-accent-foreground:       var(--accent-foreground);
-  --color-destructive:             var(--destructive);
-  --color-destructive-foreground:  var(--destructive-foreground);
-  --color-border:                  var(--border);
-  --color-input:                   var(--input);
-  --color-input-background:        var(--input-background);
-  --color-switch-background:       var(--switch-background);
-  --color-ring:                    var(--ring);
-  --color-chart-1:                 var(--chart-1);
-  --color-chart-2:                 var(--chart-2);
-  --color-chart-3:                 var(--chart-3);
-  --color-chart-4:                 var(--chart-4);
-  --color-chart-5:                 var(--chart-5);
-  --radius-sm:   calc(var(--radius) - 4px);
-  --radius-md:   calc(var(--radius) - 2px);
-  --radius-lg:   var(--radius);
-  --radius-xl:   calc(var(--radius) + 4px);
-  --color-sidebar:                       var(--sidebar);
-  --color-sidebar-foreground:            var(--sidebar-foreground);
-  --color-sidebar-primary:               var(--sidebar-primary);
-  --color-sidebar-primary-foreground:    var(--sidebar-primary-foreground);
-  --color-sidebar-accent:                var(--sidebar-accent);
-  --color-sidebar-accent-foreground:     var(--sidebar-accent-foreground);
-  --color-sidebar-border:                var(--sidebar-border);
-  --color-sidebar-ring:                  var(--sidebar-ring);
+  --color-counter:         var(--counter);
+  --color-paper:           var(--paper);
+  --color-ink:             var(--ink);
+  --color-ink-soft:        var(--ink-soft);
+  --color-rule:            var(--rule);
+  --color-stock-offer:     var(--stock-offer);
+  --color-stock-live:      var(--stock-live);
+  --color-stock-verdict:   var(--stock-verdict);
+  --color-stock-done:      var(--stock-done);
+  --color-ticket-ink:      var(--ticket-ink);
+  --color-ticket-ink-soft: var(--ticket-ink-soft);
+  --color-ticket-paper:    var(--ticket-paper);
+  --color-stamp-win:       var(--stamp-win);
+  --color-stamp-neutral:   var(--stamp-neutral);
+  --color-danger:          var(--danger);
+  --color-scrim:           var(--scrim);
+  --color-hover:           var(--hover);
+
+  --font-sans: 'Archivo Variable', 'Archivo', ui-sans-serif, system-ui, sans-serif;
+
+  --text-meta:              13px;
+  --text-meta--line-height: 18px;
+  --text-label:              14px;
+  --text-label--line-height: 20px;
+  --text-body:               16px;
+  --text-body--line-height:  24px;
+  --text-terms:              19px;
+  --text-terms--line-height: 26px;
+  --text-title:              22px;
+  --text-title--line-height: 28px;
+  --text-stake:              40px;
+  --text-stake--line-height: 40px;
+  --text-stamp:              18px;
+  --text-stamp--line-height: 18px;
 }
 
-/* ─── Base layer ─────────────────────────────── */
+/* Width is Archivo's expressive axis. */
+@utility wdth-condensed { font-stretch: 62%; }
+@utility wdth-title     { font-stretch: 112%; }
+@utility wdth-wide      { font-stretch: 125%; }
+
+/* ─── Base ──────────────────────────────────────── */
 @layer base {
   *, *::before, *::after {
-    @apply border-border outline-ring/50;
     box-sizing: border-box;
+    border-color: var(--rule);
   }
 
   html {
-    font-size: var(--font-size);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    -webkit-tap-highlight-color: transparent;
   }
 
   body {
-    @apply bg-background text-foreground;
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-    line-height: 1.5;
+    margin: 0;
+    background: var(--counter);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 24px;
   }
-
-  /* Scrollbars: hidden until hover */
-  * {
-    scrollbar-width: thin;
-    scrollbar-color: transparent transparent;
-  }
-  *:hover {
-    scrollbar-color: var(--border) transparent;
-  }
-  ::-webkit-scrollbar        { width: 3px; height: 3px; }
-  ::-webkit-scrollbar-track  { background: transparent; }
-  ::-webkit-scrollbar-thumb  { background: transparent; border-radius: 99px; }
-  *:hover::-webkit-scrollbar-thumb { background: var(--border); }
-
-  /* Typography resets */
-  h1 { font-size: 1.5rem;   font-weight: 600; line-height: 1.33; }
-  h2 { font-size: 1.125rem; font-weight: 500; line-height: 1.33; }
-  h3 { font-size: 1rem;     font-weight: 500; line-height: 1.5;  }
-  h4 { font-size: 0.875rem; font-weight: 500; line-height: 1.5;  }
 
   button, input, textarea, select {
-    font-family: inherit;
-    font-size: 0.875rem;
-    font-weight: var(--font-weight-normal);
-    line-height: 1.5;
+    font: inherit;
+    color: inherit;
   }
+
+  button:not(:disabled), [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+
+  ::placeholder {
+    color: var(--ink-soft);
+    opacity: 1;
+  }
+
+  /* Focus: 2px ink outline, 2px offset, plus an offer-yellow halo. */
+  :focus { outline: none; }
+  :focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 5px var(--stock-offer);
+  }
+  /* On tickets the outline uses ticket ink so it shows on every stock. */
+  .ticket :focus-visible { outline-color: var(--ticket-ink); }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--rule) transparent;
+  }
+}
+
+/* ─── Sheets: slide up on mobile, centered panel on desktop ─── */
+@keyframes scrim-in  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes scrim-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes sheet-up   { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes sheet-down { from { transform: translateY(0); } to { transform: translateY(100%); } }
+@keyframes panel-in  { from { opacity: 0; transform: translateY(12px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes panel-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(8px) scale(0.98); } }
+@keyframes pop-in  { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+@layer components {
+  .scrim[data-state="open"]   { animation: scrim-in 180ms ease-out; }
+  .scrim[data-state="closed"] { animation: scrim-out 140ms ease-in; }
+
+  .sheet[data-state="open"]   { animation: sheet-up 260ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+  .sheet[data-state="closed"] { animation: sheet-down 180ms ease-in; }
+
+  @media (min-width: 768px) {
+    .sheet[data-state="open"]   { animation: panel-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+    .sheet[data-state="closed"] { animation: panel-out 140ms ease-in; }
+  }
+
+  .menu[data-state="open"] { animation: pop-in 120ms ease-out; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scrim, .sheet, .menu { animation: none !important; }
+  html { scroll-behavior: auto !important; }
 }
