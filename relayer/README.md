@@ -14,10 +14,12 @@ resolves to `66.42.115.38`). It runs behind Caddy, and
 `deploy/relayer/accountabilibuddy-update.timer` checks the GitHub `main` branch
 every minute. See `deploy/relayer/README.md` for provisioning and operations.
 
-Resolve a commitment successfully:
+Resolve a commitment successfully (operator-only: requires `OPERATOR_TOKEN` to be
+set on the relayer; the route returns 404 when it is unset):
 
 ```bash
 curl -X POST http://localhost:8787/verify \
+  -H "authorization: Bearer $OPERATOR_TOKEN" \
   -H 'content-type: application/json' \
   -d '{"commitmentId":"COMMITMENT_PDA"}'
 ```
@@ -52,9 +54,9 @@ curl 'http://localhost:8787/scoreboard?sport=nba'
 # Inspect one game's result (null until final)
 curl 'http://localhost:8787/game?sport=nba&id=401584793'
 
-# List all on-chain sports bets, or force a settlement sweep
+# List all on-chain sports bets, or force a settlement sweep (operator-only)
 curl  http://localhost:8787/sports-bets
-curl -X POST http://localhost:8787/settle-bet
+curl -X POST -H "authorization: Bearer $OPERATOR_TOKEN" http://localhost:8787/settle-bet
 ```
 
 Drive the full lifecycle from the CLI (`yarn bet <cmd>`):

@@ -1061,6 +1061,14 @@ async function handleVote(
   const user = await requireLinkedUserFromDiscordId(interaction.user.id, interaction);
   if (!user) return;
 
+  // The relayer only accepts votes from members of the bet's Discord conversation.
+  // Clicking the vote button in this channel proves channel membership, so record it;
+  // a bet posted in a different channel still rejects the vote.
+  if (interaction.channelId) {
+    await getOrCreateDiscordConversation(interaction.channelId, interaction.guildId, interaction.guild?.name, user)
+      .catch((err) => console.warn("discord: failed to record voter channel membership:", err));
+  }
+
   const { ok, status, data } = await relayerCall("POST", "/bets/vote", user, { betId, votedFor });
   if (!ok || !data?.bet) {
     const reason = (data && typeof data.error === "string") ? data.error : `relayer returned ${status}`;

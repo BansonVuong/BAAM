@@ -12,6 +12,8 @@
 //   PROFILE_WALLET    profile wallet pubkey  (default oracle pubkey)
 //   AUTH_SECRET       HMAC signing secret for auth sessions
 //   AUTH_SESSION_TTL_MS session lifetime in milliseconds (default 30 days)
+//   OPERATOR_TOKEN    secret for operator-only routes (POST /verify, POST /settle-bet),
+//                     sent as "Authorization: Bearer <token>". Unset = those routes 404.
 //   MONGODB_URI       Mongo connection string (optional; enables data routes)
 //   MONGODB_DB        Mongo database name     (default "accountabilibuddy")
 //   DISCORD_ENABLED          "true" to enable the Discord integration (default off)
@@ -48,6 +50,9 @@ const PROFILE_INITIALS = process.env.PROFILE_INITIALS ?? "ME";
 const PROFILE_GITHUB   = process.env.PROFILE_GITHUB ?? "me";
 const AUTH_SECRET = process.env.AUTH_SECRET ?? "dev-only-insecure-auth-secret";
 const AUTH_SESSION_TTL_MS = Number(process.env.AUTH_SESSION_TTL_MS ?? 1000 * 60 * 60 * 24 * 30);
+// Operator-only routes make the oracle sign on-chain (or run a crank), so they are
+// never exposed to end users. Unset disables them entirely.
+const OPERATOR_TOKEN = process.env.OPERATOR_TOKEN?.trim() ?? "";
 // The Discord integration is paused: the bot, /discord/* routes, new Discord bets and
 // per-server leaderboards stay off unless explicitly enabled. Existing Discord bets
 // still settle and still count toward overall standings.
@@ -818,6 +823,8 @@ const server = http.createServer(async (req, res) => {
 
     // POST /verify  (original accountability commitment)
     if (req.method === "POST" && req.url === "/verify") {
+      if (!OPERATOR_TOKEN) return json(res, 404, { error: "not found" });
+      if (!isOperatorRequest(req)) return json(res, 401, { error: "unauthorized" });
       const body = await readJson(req);
       if (typeof body.commitmentId !== "string")
         return json(res, 400, { error: "commitmentId is required" });
@@ -874,6 +881,8 @@ const server = http.createServer(async (req, res) => {
 
     // POST /settle-bet  — manually trigger crank
     if (req.method === "POST" && req.url === "/settle-bet") {
+      if (!OPERATOR_TOKEN) return json(res, 404, { error: "not found" });
+      if (!isOperatorRequest(req)) return json(res, 401, { error: "unauthorized" });
       await crankSportsBets();
       return json(res, 200, { ok: true });
     }
@@ -1876,8 +1885,9 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // GET /bets — bets linked to the current user's groups, plus active public
-    // witness votes. Pending offers and completed bets remain group-private.
+    // GET /bets — bets linked to the current user's groups and iMessage/Discord
+    // conversations, plus bets they are a party to. Only context members may vote
+    // as witnesses, so bets from other contexts are not listed.
     if (req.method === "GET" && req.url === "/bets") {
       const authUser = await getAuthenticatedUser(req);
       if (!authUser) return json(res, 401, { error: "unauthorized" });
@@ -1897,10 +1907,24 @@ const server = http.createServer(async (req, res) => {
       const legacyBetIds = groupIds.length
         ? await messagesCol.distinct("betId", { groupId: { $in: groupIds }, betId: { $type: "string" } })
         : [];
+      const [imessageConvCol, discordConvCol] = await Promise.all([
+        imessageConversations(),
+        discordConversations(),
+      ]);
+      const [imessageConversationIds, discordConversationIds] = await Promise.all([
+        imessageConvCol ? imessageConvCol.distinct("id", { memberUserIds: authUser.id }) : [],
+        discordConvCol ? discordConvCol.distinct("id", { memberUserIds: authUser.id }) : [],
+      ]);
       const membershipFilters = [
         ...(groupIds.length ? [
           { groupId: { $in: groupIds } },
           { id: { $in: legacyBetIds } },
+        ] : []),
+        ...(imessageConversationIds.length ? [
+          { source: "imessage" as const, imessageConversationId: { $in: imessageConversationIds } },
+        ] : []),
+        ...(discordConversationIds.length ? [
+          { source: "discord" as const, discordConversationId: { $in: discordConversationIds } },
         ] : []),
       ];
       const usernameFilters = [
@@ -1913,10 +1937,6 @@ const server = http.createServer(async (req, res) => {
         $or: [
           ...membershipFilters,
           ...usernameFilters,
-          {
-            status: "ACTIVE",
-            validation: { $ne: "sports" },
-          },
         ],
       }, { projection: { _id: 0 } }).toArray();
       return json(res, 200, { bets: docs.map(normalizeBetDoc) });
@@ -1954,6 +1974,15 @@ const server = http.createServer(async (req, res) => {
         return json(res, 403, {
           error: "bet participants cannot vote as witnesses",
           bet: current,
+        });
+      }
+      if (!(await isBetContextMember(authUser, current))) {
+        return json(res, 403, {
+          error: current.source === "imessage"
+            ? "only members of this iMessage conversation can vote on this bet"
+            : current.source === "discord"
+              ? "only members of this Discord channel can vote on this bet"
+              : "only members of this bet's group can vote on it",
         });
       }
       if (current.validation === "sports") {
@@ -2362,6 +2391,48 @@ function isGroupMember(group: GroupDoc, username: string): boolean {
   return Array.isArray(group.memberUsernames) && group.memberUsernames.some(
     (member) => member.toLowerCase() === username.toLowerCase(),
   );
+}
+
+// Constant-time check of the operator bearer token. Both sides are hashed first so
+// timingSafeEqual sees equal-length buffers and the token length is not leaked.
+function isOperatorRequest(req: http.IncomingMessage): boolean {
+  if (!OPERATOR_TOKEN) return false;
+  const token = readBearerToken(req);
+  if (!token) return false;
+  const provided = crypto.createHash("sha256").update(token).digest();
+  const expected = crypto.createHash("sha256").update(OPERATOR_TOKEN).digest();
+  return crypto.timingSafeEqual(provided, expected);
+}
+
+// A witness must belong to the bet's context: the web group (directly or via the
+// legacy message link), the iMessage conversation, or the Discord conversation.
+async function isBetContextMember(authUser: UserDoc, bet: BetDoc): Promise<boolean> {
+  if (bet.source === "imessage") {
+    if (!bet.imessageConversationId) return false;
+    const col = await imessageConversations();
+    const conversation = await col?.findOne(
+      { id: bet.imessageConversationId },
+      { projection: { memberUserIds: 1 } },
+    );
+    return Array.isArray(conversation?.memberUserIds) && conversation.memberUserIds.includes(authUser.id);
+  }
+  if (bet.source === "discord") {
+    if (!bet.discordConversationId) return false;
+    const col = await discordConversations();
+    const conversation = await col?.findOne(
+      { id: bet.discordConversationId },
+      { projection: { memberUserIds: 1 } },
+    );
+    return Array.isArray(conversation?.memberUserIds) && conversation.memberUserIds.includes(authUser.id);
+  }
+  const groupsCol = await groups();
+  const messagesCol = await messages();
+  if (!groupsCol || !messagesCol) return false;
+  const groupId = bet.groupId
+    ?? (await messagesCol.findOne({ betId: bet.id }, { projection: { groupId: 1 } }))?.groupId;
+  if (!groupId) return false;
+  const group = await groupsCol.findOne({ id: groupId }, { projection: { _id: 0 } });
+  return Boolean(group && isGroupMember(group, authUser.username));
 }
 
 function readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {

@@ -27,8 +27,9 @@ npm run relayer  # http://localhost:8787
   connection state, current devnet **slot**, and **oracle** pubkey. When the
   relayer is offline it degrades gracefully to a "RELAYER OFFLINE" indicator.
 - The API client in `src/lib/relayer.ts` also wraps the relayer's other
-  endpoints — `/scoreboard`, `/game`, `/verify`, `/settle-bet` — ready to drive
-  the escrow/dev-bet flows on-chain.
+  endpoints — `/scoreboard`, `/game` — ready to drive the escrow/dev-bet flows
+  on-chain. (`/verify` and `/settle-bet` are operator-only and not called from
+  the browser.)
 
 During local Vite development, the app defaults to `http://localhost:8787`.
 Production defaults to the web app's current HTTPS origin. Set
