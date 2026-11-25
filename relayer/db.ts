@@ -77,8 +77,42 @@ export interface BetDoc {
   validation?: "sports";
   /** Sport key used for sports-feed settlement. */
   sport?: "soccer" | "nba" | "nfl" | "nhl";
-  /** Numeric sports-feed event id to settle against. */
+  /**
+   * Numeric sports-feed event id (legacy name). Bets without `sportsProvider` were
+   * created against TheSportsDB, so for them this holds a TheSportsDB event id; new
+   * bets mirror `sportsEventId` here for older clients.
+   */
   espnGameId?: string;
+  /** Data provider the bet settles against (see relayer/sports). Missing = legacy "thesportsdb". */
+  sportsProvider?: "espn" | "thesportsdb";
+  /** Provider event id the bet settles against. Missing on legacy docs (use espnGameId). */
+  sportsEventId?: string;
+  /** League alias (e.g. "epl") / provider slug at creation, used as a lookup hint. */
+  sportsLeague?: string | null;
+  /** Provider team ids at creation; settlement blocks if the event's teams change. */
+  sportsHomeTeamId?: string | null;
+  sportsAwayTeamId?: string | null;
+  /**
+   * Set when the oracle refused to settle (providers disagree, teams changed, or the
+   * cross-check never confirmed). Funds stay escrowed; an operator verifies the result
+   * and unsets this to retry, or the bet is refunded via refund_stale_bet.
+   */
+  sportsSettlementBlocked?: boolean;
+  sportsSettlementBlockedReason?: string;
+  sportsSettlementBlockedAt?: number;
+  /** Snapshot of the provider result the oracle settled on (audit trail). */
+  sportsResult?: {
+    provider: string;
+    eventId: string;
+    status: string;
+    providerStatus: string;
+    homeScore: number | null;
+    awayScore: number | null;
+    homeWon: boolean | null;
+    decidedBy: string | null;
+    fetchedAtMs: number;
+    reason: string;
+  };
   /** Team display names for the chosen game (for card rendering). */
   homeTeam?: string;
   awayTeam?: string;

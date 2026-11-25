@@ -47,8 +47,8 @@ On-chain instructions (`programs/accountability`):
 The relayer polls and settles locked bets whose `settle_after` has passed.
 
 ```bash
-# List today's games + ESPN ids (soccer accepts a league, e.g. worldcup)
-curl 'http://localhost:8787/scoreboard?sport=soccer&league=worldcup'
+# List upcoming games + ESPN ids (soccer accepts a league: epl, laliga, seriea, bundesliga, ligue1, mls, ucl, worldcup)
+curl 'http://localhost:8787/scoreboard?sport=soccer&league=epl'
 curl 'http://localhost:8787/scoreboard?sport=nba'
 
 # Inspect one game's result (null until final)
@@ -58,6 +58,46 @@ curl 'http://localhost:8787/game?sport=nba&id=401584793'
 curl  http://localhost:8787/sports-bets
 curl -X POST -H "authorization: Bearer $OPERATOR_TOKEN" http://localhost:8787/settle-bet
 ```
+
+### Sports data providers (`relayer/sports/`)
+
+- **ESPN** (default, `SPORTS_PROVIDER=espn`): the keyless public JSON API
+  (`site.api.espn.com/apis/site/v2/sports/.../scoreboard?dates=YYYYMMDD` and
+  `.../summary?event=<id>`). It is **unofficial**: ESPN publishes no terms for
+  third-party use, there is no SLA, and it can change or block access at any
+  time. Fine for devnet; get a licensed feed before settling real money on
+  mainnet.
+- **TheSportsDB** stays only for legacy bets (created when it was primary; their
+  `espnGameId` holds a TheSportsDB id) and as an optional cross-check. The old
+  public key `3` is permanently disabled (HTTP 403). Legacy bets settle only when
+  `SPORTSDB_API_KEY` is set (the free test key `123` covers single-event lookups);
+  otherwise the relayer logs once and leaves them for `refund_stale_bet`.
+
+Bets store `sportsProvider` + `sportsEventId` (+ league and team ids). Kickoff,
+teams and league always come from the provider at creation, and accepting
+re-checks that the game hasn't started.
+
+Settlement rules (`relayer/sports/settlement.ts`, `decideSportsSettlement`):
+
+- Pays out only on an unambiguous **final** from a snapshot at most
+  `SPORTS_RESULT_MAX_AGE_MS` old. If scores and the provider's winner flags
+  disagree, the result is treated as unknown and the bet keeps waiting.
+- Draws/ties refund both sides. In soccer the score is regular + extra time.
+  Shootouts pay the shootout winner (`SPORTS_SOCCER_SHOOTOUT=winner`, the default)
+  or refund (`=draw`).
+- **Postponed/cancelled/abandoned** games refund both sides only once
+  `SPORTS_CANCEL_GRACE_HOURS` (default 48) have passed since the scheduled
+  kickoff. A replayed game that goes final inside the window settles normally.
+- If the bet was accepted at or after the provider's actual kickoff (for example
+  because the game was moved earlier), both sides are refunded.
+- With `SPORTS_SECONDARY_PROVIDER` set, a final result needs the secondary to
+  agree. On a disagreement, a team change, or no confirmation by the end of the
+  grace window, the bet is flagged `sportsSettlementBlocked` with a reason and
+  `OPERATOR ACTION REQUIRED` is logged. Unset the flag to retry.
+- Anything else (pending, unknown, provider down) waits. If the oracle never
+  settles a bet, the permissionless `refund_stale_bet` refunds it.
+
+Fixture-based checks: `TS_NODE_TRANSPILE_ONLY=1 npx ts-node relayer/sports/sports.check.ts`.
 
 Drive the full lifecycle from the CLI (`yarn bet <cmd>`):
 

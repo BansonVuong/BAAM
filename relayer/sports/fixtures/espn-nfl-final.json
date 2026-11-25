@@ -1,0 +1,53 @@
+{
+  "_source": "GET https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event=401873078 (trimmed to fields the parser reads; captured 2026-11-25T14:10:45.276Z)",
+  "header": {
+    "id": "401873078",
+    "league": {
+      "id": "28",
+      "slug": "nfl",
+      "name": "National Football League"
+    },
+    "competitions": [
+      {
+        "id": "401873078",
+        "date": "2026-11-24T01:15Z",
+        "status": {
+          "type": {
+            "id": "3",
+            "name": "STATUS_FINAL",
+            "state": "post",
+            "completed": true,
+            "description": "Final",
+            "detail": "Final",
+            "shortDetail": "Final"
+          },
+          "isTBDFlex": false
+        },
+        "competitors": [
+          {
+            "id": "28",
+            "homeAway": "home",
+            "score": "22",
+            "winner": true,
+            "team": {
+              "id": "28",
+              "displayName": "Washington Commanders",
+              "abbreviation": "WSH"
+            }
+          },
+          {
+            "id": "4",
+            "homeAway": "away",
+            "score": "20",
+            "winner": false,
+            "team": {
+              "id": "4",
+              "displayName": "Cincinnati Bengals",
+              "abbreviation": "CIN"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

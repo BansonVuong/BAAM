@@ -1,0 +1,52 @@
+{
+  "_source": "GET https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=401909314 (trimmed to fields the parser reads; captured 2026-11-25T14:10:44.917Z)",
+  "header": {
+    "id": "401909314",
+    "league": {
+      "id": "46",
+      "slug": "nba",
+      "name": "National Basketball Association"
+    },
+    "competitions": [
+      {
+        "id": "401909314",
+        "date": "2026-11-25T00:00Z",
+        "status": {
+          "type": {
+            "id": "3",
+            "name": "STATUS_FINAL",
+            "state": "post",
+            "completed": true,
+            "description": "Final",
+            "detail": "Final",
+            "shortDetail": "Final"
+          }
+        },
+        "competitors": [
+          {
+            "id": "19",
+            "homeAway": "home",
+            "score": "86",
+            "winner": false,
+            "team": {
+              "id": "19",
+              "displayName": "Orlando Magic",
+              "abbreviation": "ORL"
+            }
+          },
+          {
+            "id": "8",
+            "homeAway": "away",
+            "score": "104",
+            "winner": true,
+            "team": {
+              "id": "8",
+              "displayName": "Detroit Pistons",
+              "abbreviation": "DET"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

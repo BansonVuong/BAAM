@@ -1,0 +1,56 @@
+{
+  "_source": "GET https://site.api.espn.com/apis/site/v2/sports/soccer/all/summary?event=401873558 (trimmed to fields the parser reads; captured 2026-11-25T14:10:45.971Z)",
+  "header": {
+    "id": "401873558",
+    "league": {
+      "id": "5697",
+      "slug": "fifa.world.u17",
+      "name": "FIFA Under-17 World Cup"
+    },
+    "competitions": [
+      {
+        "id": "401873558",
+        "date": "2026-11-25T13:30Z",
+        "status": {
+          "displayClock": "41'",
+          "period": 1,
+          "type": {
+            "id": "25",
+            "name": "STATUS_FIRST_HALF",
+            "state": "in",
+            "completed": false,
+            "description": "First Half",
+            "detail": "41'",
+            "shortDetail": "41'",
+            "statusPrimary": "41'"
+          },
+          "displayPeriod": "1st"
+        },
+        "competitors": [
+          {
+            "id": "20063",
+            "homeAway": "home",
+            "score": "1",
+            "winner": false,
+            "team": {
+              "id": "20063",
+              "displayName": "Haiti U17",
+              "abbreviation": "HAI"
+            }
+          },
+          {
+            "id": "130889",
+            "homeAway": "away",
+            "score": "0",
+            "winner": false,
+            "team": {
+              "id": "130889",
+              "displayName": "Saudi Arabia U17",
+              "abbreviation": "KSA"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

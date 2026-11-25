@@ -1,0 +1,52 @@
+{
+  "_source": "GET https://site.api.espn.com/apis/site/v2/sports/soccer/all/summary?event=401930155 (trimmed to fields the parser reads; captured 2026-11-25T14:10:45.881Z)",
+  "header": {
+    "id": "401930155",
+    "league": {
+      "id": "19834",
+      "slug": "club.friendly",
+      "name": "Club Friendly"
+    },
+    "competitions": [
+      {
+        "id": "401930155",
+        "date": "2026-11-12T14:00Z",
+        "status": {
+          "type": {
+            "id": "5",
+            "name": "STATUS_CANCELED",
+            "state": "post",
+            "completed": false,
+            "description": "Canceled",
+            "detail": "Canceled",
+            "shortDetail": "Canceled"
+          }
+        },
+        "competitors": [
+          {
+            "id": "7834",
+            "homeAway": "home",
+            "score": "0",
+            "winner": false,
+            "team": {
+              "id": "7834",
+              "displayName": "BK Häcken",
+              "abbreviation": "BKH"
+            }
+          },
+          {
+            "id": "3039",
+            "homeAway": "away",
+            "score": "0",
+            "winner": false,
+            "team": {
+              "id": "3039",
+              "displayName": "Fredrikstad",
+              "abbreviation": "FRE"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

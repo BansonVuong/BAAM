@@ -1,0 +1,201 @@
+{
+  "_source": "GET https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=20261125 (trimmed; first 3 events; captured 2026-11-25T14:10:46.046Z)",
+  "leagues": [
+    {
+      "id": "46",
+      "slug": "nba",
+      "name": "National Basketball Association"
+    }
+  ],
+  "events": [
+    {
+      "id": "401909317",
+      "uid": "s:40~l:46~e:401909317",
+      "date": "2026-11-25T22:00Z",
+      "name": "Miami Heat at Philadelphia 76ers",
+      "shortName": "MIA @ PHI",
+      "status": {
+        "clock": 0,
+        "displayClock": "0.0",
+        "period": 0,
+        "type": {
+          "id": "1",
+          "name": "STATUS_SCHEDULED",
+          "state": "pre",
+          "completed": false,
+          "description": "Scheduled",
+          "detail": "Wed, November 25th at 5:00 PM EST",
+          "shortDetail": "11/25 - 5:00 PM EST"
+        }
+      },
+      "competitions": [
+        {
+          "id": "401909317",
+          "date": "2026-11-25T22:00Z",
+          "status": {
+            "clock": 0,
+            "displayClock": "0.0",
+            "period": 0,
+            "type": {
+              "id": "1",
+              "name": "STATUS_SCHEDULED",
+              "state": "pre",
+              "completed": false,
+              "description": "Scheduled",
+              "detail": "Wed, November 25th at 5:00 PM EST",
+              "shortDetail": "11/25 - 5:00 PM EST"
+            }
+          },
+          "competitors": [
+            {
+              "id": "20",
+              "homeAway": "home",
+              "score": "0",
+              "team": {
+                "id": "20",
+                "displayName": "Philadelphia 76ers",
+                "abbreviation": "PHI"
+              }
+            },
+            {
+              "id": "14",
+              "homeAway": "away",
+              "score": "0",
+              "team": {
+                "id": "14",
+                "displayName": "Miami Heat",
+                "abbreviation": "MIA"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "401909318",
+      "uid": "s:40~l:46~e:401909318",
+      "date": "2026-11-26T00:00Z",
+      "name": "Chicago Bulls at Charlotte Hornets",
+      "shortName": "CHI @ CHA",
+      "status": {
+        "clock": 0,
+        "displayClock": "0.0",
+        "period": 0,
+        "type": {
+          "id": "1",
+          "name": "STATUS_SCHEDULED",
+          "state": "pre",
+          "completed": false,
+          "description": "Scheduled",
+          "detail": "Wed, November 25th at 7:00 PM EST",
+          "shortDetail": "11/25 - 7:00 PM EST"
+        }
+      },
+      "competitions": [
+        {
+          "id": "401909318",
+          "date": "2026-11-26T00:00Z",
+          "status": {
+            "clock": 0,
+            "displayClock": "0.0",
+            "period": 0,
+            "type": {
+              "id": "1",
+              "name": "STATUS_SCHEDULED",
+              "state": "pre",
+              "completed": false,
+              "description": "Scheduled",
+              "detail": "Wed, November 25th at 7:00 PM EST",
+              "shortDetail": "11/25 - 7:00 PM EST"
+            }
+          },
+          "competitors": [
+            {
+              "id": "30",
+              "homeAway": "home",
+              "score": "0",
+              "team": {
+                "id": "30",
+                "displayName": "Charlotte Hornets",
+                "abbreviation": "CHA"
+              }
+            },
+            {
+              "id": "4",
+              "homeAway": "away",
+              "score": "0",
+              "team": {
+                "id": "4",
+                "displayName": "Chicago Bulls",
+                "abbreviation": "CHI"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "401909319",
+      "uid": "s:40~l:46~e:401909319",
+      "date": "2026-11-26T00:30Z",
+      "name": "Cleveland Cavaliers at New York Knicks",
+      "shortName": "CLE @ NY",
+      "status": {
+        "clock": 0,
+        "displayClock": "0.0",
+        "period": 0,
+        "type": {
+          "id": "1",
+          "name": "STATUS_SCHEDULED",
+          "state": "pre",
+          "completed": false,
+          "description": "Scheduled",
+          "detail": "Wed, November 25th at 7:30 PM EST",
+          "shortDetail": "11/25 - 7:30 PM EST"
+        }
+      },
+      "competitions": [
+        {
+          "id": "401909319",
+          "date": "2026-11-26T00:30Z",
+          "status": {
+            "clock": 0,
+            "displayClock": "0.0",
+            "period": 0,
+            "type": {
+              "id": "1",
+              "name": "STATUS_SCHEDULED",
+              "state": "pre",
+              "completed": false,
+              "description": "Scheduled",
+              "detail": "Wed, November 25th at 7:30 PM EST",
+              "shortDetail": "11/25 - 7:30 PM EST"
+            }
+          },
+          "competitors": [
+            {
+              "id": "18",
+              "homeAway": "home",
+              "score": "0",
+              "team": {
+                "id": "18",
+                "displayName": "New York Knicks",
+                "abbreviation": "NY"
+              }
+            },
+            {
+              "id": "5",
+              "homeAway": "away",
+              "score": "0",
+              "team": {
+                "id": "5",
+                "displayName": "Cleveland Cavaliers",
+                "abbreviation": "CLE"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
