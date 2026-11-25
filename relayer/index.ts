@@ -88,6 +88,11 @@ import {
 import { startDiscordBot, verifyDiscordLinkCode, announceDiscordLink } from "./discord";
 import { fallbackLabel, isWitnessOfferExpired, witnessCrankAction } from "./witness-fallback";
 import * as points from "./points";
+import { visibleBetsFilter } from "./bet-visibility";
+import {
+  crankCheckinBets, decorateBetsForViewer, decorateIMessageCard, handleFeatureRoutes, parseScheduledBetInput,
+  SCHEDULED_BET_VOTE_ERROR, type FeatureContext,
+} from "./features";
 import idl from "./generated/accountability.json";
 import type { Accountability } from "./generated/accountability";
 
@@ -1035,6 +1040,24 @@ async function crankLegacyWitnessBet(
   }
 }
 
+// Proof, recurring check-in bets and stats (relayer/features.ts).
+const featureCtx: FeatureContext = {
+  getAuthenticatedUser,
+  isBetContextMember,
+  normalizeBetDoc,
+  json,
+  corsHeaders,
+  urlSigningSecret: AUTH_SECRET,
+  // The fallback crank uses chain time; never judge a deadline earlier than it does.
+  deadlineNowMs: async () => {
+    const chainSec = await Promise.race([
+      currentUnixTimeSec().catch(() => 0),
+      new Promise<number>((resolve) => setTimeout(() => resolve(0), 3_000).unref()),
+    ]);
+    return Math.max(Date.now(), chainSec * 1000);
+  },
+};
+
 // ── HTTP server ───────────────────────────────────────────────────────────────
 
 const server = http.createServer(async (req, res) => {
@@ -1057,6 +1080,9 @@ const server = http.createServer(async (req, res) => {
         db:      isDbConfigured() ? "configured" : "unconfigured",
       });
     }
+
+    // Proof, check-ins, GET /bets/:id, GET /stats/:username (relayer/features.ts)
+    if (await handleFeatureRoutes(req, res, featureCtx)) return;
 
     // POST /auth/signup  { email, username, password }
     if (req.method === "POST" && req.url === "/auth/signup") {
@@ -1473,7 +1499,9 @@ const server = http.createServer(async (req, res) => {
       const lookup = await loadAuthorizedBetForUser(authUser, imessageBetPathId);
       if ("error" in lookup) return json(res, lookup.status, { error: lookup.error });
       return json(res, 200, {
-        card: toIMessageBetCard(authUser.username, lookup.bet, lookup.group),
+        card: await decorateIMessageCard(
+          featureCtx, authUser, lookup.bet, toIMessageBetCard(authUser.username, lookup.bet, lookup.group),
+        ),
       });
     }
 
@@ -1552,7 +1580,9 @@ const server = http.createServer(async (req, res) => {
       const lookup = await loadAuthorizedBetForUser(authUser, discordBetPathId);
       if ("error" in lookup) return json(res, lookup.status, { error: lookup.error });
       return json(res, 200, {
-        card: toIMessageBetCard(authUser.username, lookup.bet, lookup.group),
+        card: await decorateIMessageCard(
+          featureCtx, authUser, lookup.bet, toIMessageBetCard(authUser.username, lookup.bet, lookup.group),
+        ),
       });
     }
 
@@ -1978,6 +2008,14 @@ const server = http.createServer(async (req, res) => {
       if (terms.length < 8) {
         return json(res, 400, { error: "terms must be at least 8 characters" });
       }
+      // Recurring check-in bets: the schedule fixes resolveByDate and caps acceptByDate.
+      const scheduledInput = isSports ? null : parseScheduledBetInput(body, Date.now());
+      if (scheduledInput && "error" in scheduledInput) return json(res, 400, { error: scheduledInput.error });
+      const scheduled = scheduledInput && !("error" in scheduledInput) ? scheduledInput : null;
+      if (scheduled) {
+        body.acceptByDate = scheduled.acceptByDate(body.acceptByDate);
+        body.resolveByDate = scheduled.resolveByDate;
+      }
 
       const group = groupId
         ? await groupsCol.findOne({ id: groupId }, { projection: { _id: 0 } })
@@ -2098,6 +2136,7 @@ const server = http.createServer(async (req, res) => {
         } : {}),
         ...witnessFields,
         ...(isPoints ? { onChain: false } : {}),
+        ...(scheduled ? scheduled.fields : {}),
       };
       await betsCol.insertOne(betDoc);
 
@@ -2452,51 +2491,11 @@ const server = http.createServer(async (req, res) => {
       const groupsCol = await groups();
       const messagesCol = await messages();
       if (!betsCol || !groupsCol || !messagesCol) return dbUnconfigured(res);
-      const memberGroups = await groupsCol
-        .find({}, { projection: { id: 1, memberUsernames: 1 } })
-        .toArray();
-      const groupIds = memberGroups
-        .filter((group) => (
-          Array.isArray(group.memberUsernames)
-          && group.memberUsernames.some((member) => member.toLowerCase() === authUser.username.toLowerCase())
-        ))
-        .map((group) => group.id);
-      const legacyBetIds = groupIds.length
-        ? await messagesCol.distinct("betId", { groupId: { $in: groupIds }, betId: { $type: "string" } })
-        : [];
-      const [imessageConvCol, discordConvCol] = await Promise.all([
-        imessageConversations(),
-        discordConversations(),
-      ]);
-      const [imessageConversationIds, discordConversationIds] = await Promise.all([
-        imessageConvCol ? imessageConvCol.distinct("id", { memberUserIds: authUser.id }) : [],
-        discordConvCol ? discordConvCol.distinct("id", { memberUserIds: authUser.id }) : [],
-      ]);
-      const membershipFilters = [
-        ...(groupIds.length ? [
-          { groupId: { $in: groupIds } },
-          { id: { $in: legacyBetIds } },
-        ] : []),
-        ...(imessageConversationIds.length ? [
-          { source: "imessage" as const, imessageConversationId: { $in: imessageConversationIds } },
-        ] : []),
-        ...(discordConversationIds.length ? [
-          { source: "discord" as const, discordConversationId: { $in: discordConversationIds } },
-        ] : []),
-      ];
-      const usernameFilters = [
-        { challenger: authUser.username },
-        { acceptor: authUser.username },
-        { acceptedBy: authUser.username },
-        { opponentUsername: authUser.username },
-      ];
-      const docs = await betsCol.find({
-        $or: [
-          ...membershipFilters,
-          ...usernameFilters,
-        ],
-      }, { projection: { _id: 0 } }).toArray();
-      return json(res, 200, { bets: docs.map(normalizeBetDoc) });
+      const docs = await betsCol.find(await visibleBetsFilter(authUser), { projection: { _id: 0 } }).toArray();
+      // Every listed bet is in the viewer's chats or involves them, so proof is viewable.
+      return json(res, 200, {
+        bets: await decorateBetsForViewer(featureCtx, authUser, docs, { contextMember: true }),
+      });
     }
 
     // POST /bets/vote  { betId, votedFor }  — cast/update witness vote
@@ -2548,6 +2547,7 @@ const server = http.createServer(async (req, res) => {
           bet: current,
         });
       }
+      if (current.schedule) return json(res, 409, { error: SCHEDULED_BET_VOTE_ERROR, bet: current });
       if (isBetCompletedStatus(current.status)) {
         return json(res, 409, { error: "bet is already completed", bet: current });
       }
@@ -2856,6 +2856,9 @@ function runPointsCrank(): Promise<points.PointsCrankReport> {
 async function runPoll(): Promise<void> {
   await runPointsCrank().catch((err) => console.error("points crank error:", err));
   try {
+    // Decide check-in bets first (independent of RPC health) so a decidable bet
+    // never loses to crankWitnessBets' fallback claim.
+    await crankCheckinBets(featureCtx).catch((err) => console.error("check-in crank error:", err));
     await crankTimeouts();
     await crankSportsBets();
     await crankWitnessBets();
