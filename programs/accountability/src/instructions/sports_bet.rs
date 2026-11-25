@@ -4,7 +4,7 @@ use anchor_lang::{
 };
 
 use crate::{
-    constants::{BACK_OUT_CUTOFF_SECS, SPORTS_BET_SEED, SPORTS_VAULT_SEED},
+    constants::{BACK_OUT_CUTOFF_SECS, SPORTS_BET_SEED, SPORTS_VAULT_SEED, STALE_BET_GRACE_SECS},
     error::ErrorCode,
     state::{SportsBet, SportsBetState, SportsVault},
 };
@@ -310,6 +310,76 @@ pub fn process_settle_bet(ctx: Context<SettleBet>, home_won: Option<bool>) -> Re
             }
         }
     }
+
+    ctx.accounts.sports_bet.state = SportsBetState::Settled;
+    Ok(())
+}
+
+// ── refund stale (permissionless, oracle never settled) ────────────────────────
+
+#[derive(Accounts)]
+pub struct RefundStaleBet<'info> {
+    /// Anyone — a participant, the relayer, or an unrelated cranker. Only pays the
+    /// transaction fee; receives nothing.
+    pub caller: Signer<'info>,
+    /// CHECK: validated against `sports_bet.creator`; only receives lamports.
+    #[account(mut)]
+    pub creator: UncheckedAccount<'info>,
+    /// CHECK: validated against `sports_bet.opponent`; only receives lamports.
+    #[account(mut)]
+    pub opponent: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        close = creator,
+        seeds = [SPORTS_BET_SEED, sports_bet.creator.as_ref(), sports_bet.game_id.as_ref()],
+        bump = sports_bet.bump,
+        has_one = creator,
+    )]
+    pub sports_bet: Account<'info, SportsBet>,
+    #[account(
+        mut,
+        close = creator,
+        seeds = [SPORTS_VAULT_SEED, sports_bet.key().as_ref()],
+        bump,
+    )]
+    pub vault: Account<'info, SportsVault>,
+}
+
+/// Escape hatch for a locked bet the oracle never settled (game postponed or
+/// cancelled, result data missing, oracle key lost). Once
+/// `settle_after + STALE_BET_GRACE_SECS` has passed, anyone may refund each side
+/// its stake; the `close = creator` constraints return both accounts' rent to the
+/// creator, exactly as `settle_bet` does.
+pub fn process_refund_stale_bet(ctx: Context<RefundStaleBet>) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    let bet = &ctx.accounts.sports_bet;
+
+    require!(bet.state == SportsBetState::Locked, ErrorCode::BetNotLocked);
+    // Saturating: `settle_after` is creator-supplied and may be near i64::MAX.
+    require!(
+        now >= bet.settle_after.saturating_add(STALE_BET_GRACE_SECS),
+        ErrorCode::StaleGraceNotElapsed
+    );
+
+    let bet_opponent = bet.opponent.ok_or(ErrorCode::BetNotLocked)?;
+    require_keys_eq!(
+        ctx.accounts.opponent.key(),
+        bet_opponent,
+        ErrorCode::InvalidOpponent
+    );
+
+    let amount = bet.amount;
+    let pot = amount
+        .checked_mul(2)
+        .ok_or(ErrorCode::InsufficientVaultBalance)?;
+    require!(
+        ctx.accounts.vault.get_lamports() >= pot,
+        ErrorCode::InsufficientVaultBalance
+    );
+
+    ctx.accounts.vault.sub_lamports(pot)?;
+    ctx.accounts.creator.add_lamports(amount)?;
+    ctx.accounts.opponent.add_lamports(amount)?;
 
     ctx.accounts.sports_bet.state = SportsBetState::Settled;
     Ok(())

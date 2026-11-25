@@ -521,6 +521,189 @@ export type Accountability = {
       ]
     },
     {
+      "name": "fallbackStaleSocial",
+      "docs": [
+        "Anyone may run the precommitted fallback of a locked social bet once",
+        "`end_date + STALE_BET_GRACE_SECS` has passed without a settlement."
+      ],
+      "discriminator": [
+        190,
+        119,
+        138,
+        117,
+        102,
+        2,
+        27,
+        49
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "docs": [
+            "Anyone — a participant, the relayer, or an unrelated cranker. Only pays the",
+            "transaction fee; receives nothing."
+          ],
+          "signer": true
+        },
+        {
+          "name": "challenger",
+          "writable": true,
+          "relations": [
+            "socialBet"
+          ]
+        },
+        {
+          "name": "opponent",
+          "writable": true,
+          "relations": [
+            "socialBet"
+          ]
+        },
+        {
+          "name": "destination",
+          "docs": [
+            "(used only for the burn/charity fallback)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "socialBet",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  111,
+                  99,
+                  105,
+                  97,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "socialBet"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "refundStaleBet",
+      "docs": [
+        "Anyone may refund both sides of a locked sports bet once",
+        "`settle_after + STALE_BET_GRACE_SECS` has passed without a settlement."
+      ],
+      "discriminator": [
+        2,
+        209,
+        32,
+        107,
+        31,
+        49,
+        173,
+        187
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "docs": [
+            "Anyone — a participant, the relayer, or an unrelated cranker. Only pays the",
+            "transaction fee; receives nothing."
+          ],
+          "signer": true
+        },
+        {
+          "name": "creator",
+          "writable": true,
+          "relations": [
+            "sportsBet"
+          ]
+        },
+        {
+          "name": "opponent",
+          "writable": true
+        },
+        {
+          "name": "sportsBet",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  114,
+                  116,
+                  115,
+                  95,
+                  98,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "sports_bet.creator",
+                "account": "sportsBet"
+              },
+              {
+                "kind": "account",
+                "path": "sports_bet.game_id",
+                "account": "sportsBet"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  114,
+                  116,
+                  115,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "sportsBet"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "resolve",
       "discriminator": [
         246,
@@ -1156,6 +1339,11 @@ export type Accountability = {
       "code": 6023,
       "name": "fallbackTooEarly",
       "msg": "Fallback can only run after the resolve-by date"
+    },
+    {
+      "code": 6024,
+      "name": "staleGraceNotElapsed",
+      "msg": "The oracle grace period has not elapsed yet"
     }
   ],
   "types": [

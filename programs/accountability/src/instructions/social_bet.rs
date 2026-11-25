@@ -4,7 +4,7 @@ use anchor_lang::{
 };
 
 use crate::{
-    constants::{SOCIAL_BET_SEED, SOCIAL_VAULT_SEED},
+    constants::{SOCIAL_BET_SEED, SOCIAL_VAULT_SEED, STALE_BET_GRACE_SECS},
     error::ErrorCode,
     state::{SocialBet, SocialBetState, SocialVault},
 };
@@ -138,13 +138,7 @@ pub fn process_settle_social(ctx: Context<SettleSocial>, outcome: u8) -> Result<
         ErrorCode::UnauthorizedOracle
     );
 
-    let pot = amount
-        .checked_mul(2)
-        .ok_or(ErrorCode::InsufficientVaultBalance)?;
-    require!(
-        ctx.accounts.vault.get_lamports() >= pot,
-        ErrorCode::InsufficientVaultBalance
-    );
+    let pot = checked_pot(amount, &ctx.accounts.vault)?;
 
     match outcome {
         0 => {
@@ -157,24 +151,16 @@ pub fn process_settle_social(ctx: Context<SettleSocial>, outcome: u8) -> Result<
         }
         2 => {
             require!(now >= end_date, ErrorCode::FallbackTooEarly);
-            match fallback_kind {
-                // return — refund both stakes
-                0 => {
-                    ctx.accounts.vault.sub_lamports(pot)?;
-                    ctx.accounts.challenger.add_lamports(amount)?;
-                    ctx.accounts.opponent.add_lamports(amount)?;
-                }
-                // burn / charity — whole pot to the precommitted destination
-                _ => {
-                    require_keys_eq!(
-                        ctx.accounts.destination.key(),
-                        fallback_dest,
-                        ErrorCode::InvalidDestination
-                    );
-                    ctx.accounts.vault.sub_lamports(pot)?;
-                    ctx.accounts.destination.add_lamports(pot)?;
-                }
-            }
+            pay_fallback(
+                &ctx.accounts.vault,
+                &ctx.accounts.challenger,
+                &ctx.accounts.opponent,
+                &ctx.accounts.destination,
+                amount,
+                pot,
+                fallback_kind,
+                fallback_dest,
+            )?;
         }
         _ => return err!(ErrorCode::InvalidOutcome),
     }
@@ -183,7 +169,121 @@ pub fn process_settle_social(ctx: Context<SettleSocial>, outcome: u8) -> Result<
     Ok(())
 }
 
+// ── stale fallback (permissionless, oracle never settled) ────────────────────────
+
+#[derive(Accounts)]
+pub struct FallbackStaleSocial<'info> {
+    /// Anyone — a participant, the relayer, or an unrelated cranker. Only pays the
+    /// transaction fee; receives nothing.
+    pub caller: Signer<'info>,
+    /// CHECK: validated against `social_bet.challenger`; only receives lamports.
+    #[account(mut)]
+    pub challenger: UncheckedAccount<'info>,
+    /// CHECK: validated against `social_bet.opponent`; only receives lamports.
+    #[account(mut)]
+    pub opponent: UncheckedAccount<'info>,
+    /// CHECK: validated against `social_bet.fallback_dest`; only receives lamports
+    /// (used only for the burn/charity fallback).
+    #[account(mut)]
+    pub destination: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        close = challenger,
+        has_one = challenger,
+        has_one = opponent,
+        constraint = social_bet.state == SocialBetState::Locked @ ErrorCode::BetNotLocked,
+    )]
+    pub social_bet: Account<'info, SocialBet>,
+    #[account(
+        mut,
+        close = challenger,
+        seeds = [SOCIAL_VAULT_SEED, social_bet.key().as_ref()],
+        bump,
+    )]
+    pub vault: Account<'info, SocialVault>,
+}
+
+/// Escape hatch for a locked witness bet the oracle never settled. Once
+/// `end_date + STALE_BET_GRACE_SECS` has passed, anyone may execute the
+/// precommitted fallback — identical to `settle_social` with `outcome == 2`.
+pub fn process_fallback_stale_social(ctx: Context<FallbackStaleSocial>) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+
+    let amount = ctx.accounts.social_bet.amount;
+    let end_date = ctx.accounts.social_bet.end_date;
+    let fallback_kind = ctx.accounts.social_bet.fallback_kind;
+    let fallback_dest = ctx.accounts.social_bet.fallback_dest;
+
+    // Saturating: `end_date` is user-supplied and may be near i64::MAX.
+    require!(
+        now >= end_date.saturating_add(STALE_BET_GRACE_SECS),
+        ErrorCode::StaleGraceNotElapsed
+    );
+
+    let pot = checked_pot(amount, &ctx.accounts.vault)?;
+    pay_fallback(
+        &ctx.accounts.vault,
+        &ctx.accounts.challenger,
+        &ctx.accounts.opponent,
+        &ctx.accounts.destination,
+        amount,
+        pot,
+        fallback_kind,
+        fallback_dest,
+    )?;
+
+    ctx.accounts.social_bet.state = SocialBetState::Settled;
+    Ok(())
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────────
+
+/// `2 * amount`, checked against what the vault actually holds.
+fn checked_pot(amount: u64, vault: &Account<'_, SocialVault>) -> Result<u64> {
+    let pot = amount
+        .checked_mul(2)
+        .ok_or(ErrorCode::InsufficientVaultBalance)?;
+    require!(
+        vault.get_lamports() >= pot,
+        ErrorCode::InsufficientVaultBalance
+    );
+    Ok(pot)
+}
+
+/// Execute the precommitted fallback. Shared by `settle_social` (outcome 2, oracle,
+/// after `end_date`) and `fallback_stale_social` (anyone, after the grace period)
+/// so the two paths cannot diverge.
+#[allow(clippy::too_many_arguments)]
+fn pay_fallback<'info>(
+    vault: &Account<'info, SocialVault>,
+    challenger: &UncheckedAccount<'info>,
+    opponent: &UncheckedAccount<'info>,
+    destination: &UncheckedAccount<'info>,
+    amount: u64,
+    pot: u64,
+    fallback_kind: u8,
+    fallback_dest: Pubkey,
+) -> Result<()> {
+    match fallback_kind {
+        // return — refund both stakes
+        0 => {
+            vault.sub_lamports(pot)?;
+            challenger.add_lamports(amount)?;
+            opponent.add_lamports(amount)?;
+        }
+        // burn / charity — whole pot to the precommitted destination
+        _ => {
+            require_keys_eq!(
+                destination.key(),
+                fallback_dest,
+                ErrorCode::InvalidDestination
+            );
+            vault.sub_lamports(pot)?;
+            destination.add_lamports(pot)?;
+        }
+    }
+    Ok(())
+}
 
 fn transfer_in<'info>(
     system_program: &Program<'info, System>,
